@@ -1,31 +1,17 @@
 #!/usr/bin/env python3
 """Matrix OS V8 cinematic Raspberry Pi display.
 
-Reveal engine notes (v8 rewrite):
-  * Nothing ever fades. A cell is either drawn at full brightness or not
-    drawn at all - visibility is controlled by cell STATE, never alpha.
-  * Reveal order is a shuffled per-cell order (random cells lock in one
-    at a time), each cell doing a few quick glyph flickers before it
-    locks to its real character. This replaces the old left-to-right
-    scramble sweep.
-  * Dissolve is a shatter: locked cells pick up random outward drift and
-    vanish (hard cut) once they've drifted far enough - not a fade-out.
-  * The rain loop is completely independent of the reveal engine and
-    never stops, pauses, or gets boxed off. The reveal only draws on top
-    of the specific character cells it owns.
-  * OS-style status glimpses (ACCESSING..., CPU 12%, etc.) run through
-    the exact same reveal engine, just shorter, and appear at random
-    before some real data reveals.
-  * The clock at the top is pinned above TIME_HEIGHT; nothing (rain or
-    reveal) is ever drawn above that line.
+Hard-cut glyph reveals, continuous Matrix rain, shatter collapse, live weather,
+room temperatures and XRP/USD pricing with automatic source fallback.
 """
 
 import math
 import os
 import random
 import sys
+import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable, List, Optional, Tuple
 
@@ -41,48 +27,47 @@ FULLSCREEN = os.getenv("MATRIX_FULLSCREEN", "1") != "0"
 TIME_HEIGHT = 58
 TIME_FORMAT = "%I:%M %p"
 
-IDLE_MIN_SECONDS, IDLE_MAX_SECONDS = 10, 19
+IDLE_MIN_SECONDS, IDLE_MAX_SECONDS = 8, 15
 HOLD_SECONDS = 7.0
-OS_HOLD_SECONDS = 1.4
-OS_GLIMPSE_CHANCE = 0.35
-
-CELL_STAGGER = 0.028
-FLICKER_FRAMES_MIN, FLICKER_FRAMES_MAX = 2, 4
-GLITCH_RELOCK_CHANCE = 0.02
-SHATTER_SPEED_MIN, SHATTER_SPEED_MAX = 70.0, 190.0
-SHATTER_LIFETIME = 0.55
-REVEAL_TIMEOUT_PAD = 1.0
+OS_HOLD_SECONDS = 1.35
+OS_GLIMPSE_CHANCE = 0.28
+CELL_STAGGER = 0.022
+FLICKER_FRAMES_MIN, FLICKER_FRAMES_MAX = 2, 5
+GLITCH_RELOCK_CHANCE = 0.012
+SHATTER_SPEED_MIN, SHATTER_SPEED_MAX = 85.0, 220.0
+SHATTER_LIFETIME = 0.62
+REVEAL_TIMEOUT_PAD = 0.8
 
 DATA_REFRESH_SECONDS = 180
+XRP_REFRESH_SECONDS = 30
 WU_STATION_ID = os.getenv("WU_STATION_ID", "KOHGROVE130")
 WU_API_KEY = os.getenv("WU_API_KEY", "")
 FRONT_ROOM_URL = os.getenv("FRONT_ROOM_URL", "")
 BEDROOM_URL = os.getenv("BEDROOM_URL", "")
-XRP_URL = "https://min-api.cryptocompare.com/data/price?fsym=XRP&tsyms=USD"
+
+XRP_SOURCES = (
+    ("Coinbase", "https://api.coinbase.com/v2/prices/XRP-USD/spot"),
+    ("CoinGecko", "https://api.coingecko.com/api/v3/simple/price?ids=ripple&vs_currencies=usd"),
+    ("Kraken", "https://api.kraken.com/0/public/Ticker?pair=XRPUSD"),
+)
 
 MATRIX_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz@#$%&*+=<>?/\\|ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎ"
-
 OS_GLIMPSES = [
     "ACCESSING...",
-    "CPU 12%",
     "WEATHER MODULE ONLINE",
-    "CAMERA 3 CONNECTED",
+    "CAMERA LINK ACTIVE",
     "GOVEE LINK ACTIVE",
+    "CRYPTO FEED ONLINE",
 ]
 
 GREEN = (0, 255, 70)
-DIM_GREEN = (0, 95, 35)
-WHITE_GREEN = (180, 255, 200)
+DIM_GREEN = (0, 92, 34)
+WHITE_GREEN = (185, 255, 205)
 BLACK = (0, 0, 0)
 
 
 def clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
-
-
-def ease(t: float) -> float:
-    t = clamp(t, 0.0, 1.0)
-    return t * t * (3.0 - 2.0 * t)
 
 
 def lerp(a: float, b: float, t: float) -> float:
@@ -112,12 +97,36 @@ def get_json(url: str) -> Optional[dict]:
     if not url or requests is None:
         return None
     try:
-        response = requests.get(url, timeout=4)
+        response = requests.get(
+            url,
+            timeout=5,
+            headers={"User-Agent": "MatrixOS-V8/1.0"},
+        )
         response.raise_for_status()
-        value = response.json()
-        return value if isinstance(value, dict) else None
+        payload = response.json()
+        return payload if isinstance(payload, dict) else None
     except Exception:
         return None
+
+
+def fetch_xrp_price() -> Tuple[Optional[float], str]:
+    """Fetch XRP/USD using independent spot-price sources in priority order."""
+    for source, url in XRP_SOURCES:
+        payload = get_json(url)
+        try:
+            if source == "Coinbase":
+                price = float(payload["data"]["amount"])
+            elif source == "CoinGecko":
+                price = float(payload["ripple"]["usd"])
+            else:
+                result = payload.get("result", {})
+                ticker = next(iter(result.values()))
+                price = float(ticker["c"][0])
+            if 0.01 < price < 1000:
+                return price, source
+        except Exception:
+            continue
+    return None, "STALE"
 
 
 def cardinal(degrees: float) -> str:
@@ -132,20 +141,41 @@ class LiveData:
     bedroom_f: float = 68.0
     wind_mph: float = 8.0
     wind_dir: str = "SW"
-    xrp_usd: float = 2.40
+    xrp_usd: float = 0.0
+    xrp_source: str = "WAITING"
     last_refresh: float = -9999.0
+    last_xrp_refresh: float = -9999.0
+    _refreshing: bool = field(default=False, init=False, repr=False)
 
     def refresh(self) -> None:
+        """Never block the animation loop while HTTP requests are running."""
         now = time.monotonic()
-        if now - self.last_refresh < DATA_REFRESH_SECONDS:
+        weather_due = now - self.last_refresh >= DATA_REFRESH_SECONDS
+        xrp_due = now - self.last_xrp_refresh >= XRP_REFRESH_SECONDS
+        if self._refreshing or not (weather_due or xrp_due):
             return
-        self.last_refresh = now
-        self.refresh_weather()
-        self.refresh_room(FRONT_ROOM_URL, "front_f")
-        self.refresh_room(BEDROOM_URL, "bedroom_f")
-        payload = get_json(XRP_URL)
-        if payload and isinstance(payload.get("USD"), (int, float)):
-            self.xrp_usd = float(payload["USD"])
+        self._refreshing = True
+        threading.Thread(
+            target=self._refresh_worker,
+            args=(weather_due, xrp_due),
+            daemon=True,
+        ).start()
+
+    def _refresh_worker(self, weather_due: bool, xrp_due: bool) -> None:
+        try:
+            if weather_due:
+                self.refresh_weather()
+                self.refresh_room(FRONT_ROOM_URL, "front_f")
+                self.refresh_room(BEDROOM_URL, "bedroom_f")
+                self.last_refresh = time.monotonic()
+            if xrp_due:
+                price, source = fetch_xrp_price()
+                if price is not None:
+                    self.xrp_usd = price
+                    self.xrp_source = source.upper()
+                self.last_xrp_refresh = time.monotonic()
+        finally:
+            self._refreshing = False
 
     def refresh_weather(self) -> None:
         if not WU_API_KEY:
@@ -191,7 +221,7 @@ REVEALS = [
     Reveal("front", "FRONT ROOM", lambda d: f"{d.front_f:.0f}°", lambda d: temp_color(d.front_f)),
     Reveal("bedroom", "BEDROOM", lambda d: f"{d.bedroom_f:.0f}°", lambda d: temp_color(d.bedroom_f)),
     Reveal("wind", "WIND", lambda d: f"{d.wind_mph:.0f} MPH", lambda _: (80, 205, 255), lambda d: d.wind_dir),
-    Reveal("xrp", "XRP", lambda d: f"${d.xrp_usd:,.3f}", lambda _: (115, 205, 255)),
+    Reveal("xrp", "XRP", lambda d: "UPDATING" if d.xrp_usd <= 0 else f"${d.xrp_usd:,.4f}", lambda _: (115, 205, 255), lambda d: d.xrp_source),
 ]
 
 
@@ -220,8 +250,6 @@ class Drop:
 
 
 class MatrixRain:
-    """Full-screen rain. Runs every frame, independent of any reveal."""
-
     def __init__(self, font: pygame.font.Font):
         self.font = font
         self.char_w = max(11, font.size("W")[0])
@@ -229,8 +257,7 @@ class MatrixRain:
         self.columns: List[Drop] = []
         for x in range(0, WIDTH + self.char_w, self.char_w):
             length = random.randint(8, 20)
-            drop = Drop(x, random.uniform(-HEIGHT, HEIGHT), 5.0, length,
-                        [random.choice(MATRIX_CHARS) for _ in range(length)])
+            drop = Drop(x, random.uniform(-HEIGHT, HEIGHT), 5.0, length, [random.choice(MATRIX_CHARS) for _ in range(length)])
             drop.reset()
             drop.y = random.uniform(-HEIGHT, HEIGHT)
             self.columns.append(drop)
@@ -278,12 +305,9 @@ class Cell:
 
 
 class RevealEngine:
-    """Hard-cut glyph reveal followed by shatter dissolve; no alpha fades."""
-
     def __init__(self, lines: List[Tuple[str, pygame.font.Font, Tuple[int, int, int], int]]):
         self.cells: List[Cell] = []
         reveal_order: List[Cell] = []
-
         for text, font, color, center_y in lines:
             if not text:
                 continue
@@ -296,12 +320,10 @@ class RevealEngine:
                 cell = Cell(ch, start_x + i * char_w, center_y, color, font, 0.0)
                 self.cells.append(cell)
                 reveal_order.append(cell)
-
         random.shuffle(reveal_order)
         for i, cell in enumerate(reveal_order):
             cell.reveal_at = i * CELL_STAGGER
-
-        self.duration = (len(reveal_order) * CELL_STAGGER) + REVEAL_TIMEOUT_PAD
+        self.duration = len(reveal_order) * CELL_STAGGER + REVEAL_TIMEOUT_PAD
         self.elapsed = 0.0
         self.shattering = False
 
@@ -320,21 +342,20 @@ class RevealEngine:
             if cell.state == "gone":
                 continue
             dx, dy = cell.x - cx, cell.y - cy
-            dist = math.hypot(dx, dy) or 1.0
+            distance = math.hypot(dx, dy) or 1.0
             speed = random.uniform(SHATTER_SPEED_MIN, SHATTER_SPEED_MAX)
-            cell.vx = (dx / dist) * speed + random.uniform(-30, 30)
-            cell.vy = (dy / dist) * speed + random.uniform(-30, 30)
+            cell.vx = dx / distance * speed + random.uniform(-35, 35)
+            cell.vy = dy / distance * speed + random.uniform(-35, 35)
             cell.state = "shatter"
             cell.shatter_t = 0.0
 
     def update(self, dt: float) -> None:
         self.elapsed += dt
         for cell in self.cells:
-            if cell.state == "hidden":
-                if self.elapsed >= cell.reveal_at:
-                    cell.state = "flicker"
-                    cell.flicker_left = random.randint(FLICKER_FRAMES_MIN, FLICKER_FRAMES_MAX)
-                    cell.display_char = random.choice(MATRIX_CHARS)
+            if cell.state == "hidden" and self.elapsed >= cell.reveal_at:
+                cell.state = "flicker"
+                cell.flicker_left = random.randint(FLICKER_FRAMES_MIN, FLICKER_FRAMES_MAX)
+                cell.display_char = random.choice(MATRIX_CHARS)
             elif cell.state == "flicker":
                 cell.display_char = random.choice(MATRIX_CHARS)
                 cell.flicker_left -= 1
@@ -342,10 +363,7 @@ class RevealEngine:
                     cell.state = "locked"
                     cell.display_char = cell.char
             elif cell.state == "locked":
-                if random.random() < GLITCH_RELOCK_CHANCE:
-                    cell.display_char = random.choice(MATRIX_CHARS)
-                else:
-                    cell.display_char = cell.char
+                cell.display_char = random.choice(MATRIX_CHARS) if random.random() < GLITCH_RELOCK_CHANCE else cell.char
             elif cell.state == "shatter":
                 cell.x += cell.vx * dt
                 cell.y += cell.vy * dt
@@ -368,14 +386,12 @@ class MatrixOS:
         pygame.mouse.set_visible(False)
         pygame.display.set_caption("Matrix OS V8")
         self.clock = pygame.time.Clock()
-
         self.matrix_font = pygame.font.SysFont("DejaVu Sans Mono", 17, bold=True)
         self.time_font = pygame.font.SysFont("DejaVu Sans Mono", 38, bold=True)
         self.title_font = pygame.font.SysFont("DejaVu Sans Mono", 25, bold=True)
-        self.value_font = pygame.font.SysFont("DejaVu Sans Mono", 72, bold=True)
-        self.subtitle_font = pygame.font.SysFont("DejaVu Sans Mono", 28, bold=True)
+        self.value_font = pygame.font.SysFont("DejaVu Sans Mono", 66, bold=True)
+        self.subtitle_font = pygame.font.SysFont("DejaVu Sans Mono", 22, bold=True)
         self.glimpse_font = pygame.font.SysFont("DejaVu Sans Mono", 22, bold=True)
-
         self.rain = MatrixRain(self.matrix_font)
         self.data = LiveData()
         self.phase = "idle"
@@ -400,8 +416,7 @@ class MatrixOS:
     def begin_reveal(self) -> None:
         if random.random() < OS_GLIMPSE_CHANCE:
             self.is_glimpse = True
-            text = random.choice(OS_GLIMPSES)
-            lines = [(text, self.glimpse_font, (120, 230, 160), HEIGHT // 2 - 10)]
+            lines = [(random.choice(OS_GLIMPSES), self.glimpse_font, (120, 230, 160), HEIGHT // 2 - 10)]
             self.engine = RevealEngine(lines)
         else:
             self.is_glimpse = False
@@ -420,7 +435,6 @@ class MatrixOS:
 
     def update_state(self, dt: float) -> None:
         elapsed = self.elapsed()
-
         if self.phase == "idle":
             if random.random() < 0.0007:
                 self.clock_glitch_until = time.monotonic() + random.uniform(0.08, 0.22)
@@ -431,8 +445,8 @@ class MatrixOS:
             if self.engine.is_revealed() or elapsed >= self.engine.duration:
                 self.set_phase("hold")
         elif self.phase == "hold":
-            hold_target = OS_HOLD_SECONDS if self.is_glimpse else HOLD_SECONDS
             self.engine.update(dt)
+            hold_target = OS_HOLD_SECONDS if self.is_glimpse else HOLD_SECONDS
             if elapsed >= hold_target:
                 self.engine.start_shatter()
                 self.set_phase("shatter")
@@ -455,12 +469,10 @@ class MatrixOS:
 
     def draw(self) -> None:
         self.screen.fill(BLACK)
-
         accent = None
         strength = 0.0
         energy = 0.0
         push = 0.0
-
         if self.phase in ("reveal", "hold", "shatter") and not self.is_glimpse and self.item:
             accent = self.item.accent(self.data)
             strength = 0.55 if self.phase == "reveal" else 0.15
@@ -469,13 +481,10 @@ class MatrixOS:
                 push = 5.5
         elif self.phase in ("reveal", "hold", "shatter") and self.is_glimpse:
             strength, energy = 0.20, 0.15
-
         self.rain.update(push, energy)
         self.rain.draw(self.screen, accent, strength)
-
         if self.engine is not None:
             self.engine.draw(self.screen)
-
         self.draw_time()
         pygame.display.flip()
 
@@ -490,11 +499,9 @@ class MatrixOS:
                         return
                     if event.key == pygame.K_SPACE:
                         self.begin_reveal()
-
             now = time.monotonic()
             dt = now - last
             last = now
-
             self.data.refresh()
             self.update_state(dt)
             self.draw()
