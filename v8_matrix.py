@@ -21,9 +21,9 @@ WIDTH, HEIGHT, FPS = 480, 320, 60
 FULLSCREEN = os.getenv("MATRIX_FULLSCREEN", "1") != "0"
 TIME_HEIGHT = 58
 TIME_FORMAT = "%I:%M %p"
-IDLE_MIN_SECONDS, IDLE_MAX_SECONDS = 12, 24
-PREP_SECONDS, TEAR_SECONDS = 1.35, 1.25
-HOLD_SECONDS, COLLAPSE_SECONDS = 7.0, 1.55
+IDLE_MIN_SECONDS, IDLE_MAX_SECONDS = 10, 19
+PREP_SECONDS, TEAR_SECONDS = 1.05, 1.40
+HOLD_SECONDS, COLLAPSE_SECONDS = 7.0, 1.45
 DATA_REFRESH_SECONDS = 180
 
 WU_STATION_ID = os.getenv("WU_STATION_ID", "KOHGROVE130")
@@ -91,6 +91,21 @@ def get_json(url: str) -> Optional[dict]:
 def cardinal(degrees: float) -> str:
     points = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
     return points[int((degrees + 11.25) / 22.5) % 16]
+
+
+def decoded_text(final_text: str, progress: float) -> str:
+    """Reveal final text from left to right while unresolved glyphs scramble."""
+    progress = clamp(progress, 0.0, 1.0)
+    locked = int(len(final_text) * progress)
+    chars = []
+    for index, final_char in enumerate(final_text):
+        if final_char == " ":
+            chars.append(" ")
+        elif index < locked or progress > 0.96:
+            chars.append(final_char)
+        else:
+            chars.append(random.choice(MATRIX_CHARS))
+    return "".join(chars)
 
 
 @dataclass
@@ -171,12 +186,20 @@ class Drop:
     length: int
     chars: List[str]
     sway: float = 0.0
+    burst: float = 1.0
 
     def reset(self) -> None:
         self.y = random.uniform(-HEIGHT, -10)
-        self.speed = random.uniform(2.2, 6.0)
-        self.length = random.randint(7, 18)
+        roll = random.random()
+        if roll < 0.10:
+            self.speed = random.uniform(12.0, 18.0)
+        elif roll < 0.32:
+            self.speed = random.uniform(7.5, 12.0)
+        else:
+            self.speed = random.uniform(4.2, 8.0)
+        self.length = random.randint(8, 20)
         self.chars = [random.choice(MATRIX_CHARS) for _ in range(self.length)]
+        self.burst = 1.0
 
 
 class MatrixRain:
@@ -186,43 +209,51 @@ class MatrixRain:
         self.char_h = max(15, font.get_linesize())
         self.columns = []
         for x in range(0, WIDTH + self.char_w, self.char_w):
-            length = random.randint(7, 18)
-            self.columns.append(Drop(x, random.uniform(-HEIGHT, HEIGHT), random.uniform(2.2, 6.0), length, [random.choice(MATRIX_CHARS) for _ in range(length)]))
+            length = random.randint(8, 20)
+            drop = Drop(x, random.uniform(-HEIGHT, HEIGHT), 5.0, length, [random.choice(MATRIX_CHARS) for _ in range(length)])
+            drop.reset()
+            drop.y = random.uniform(-HEIGHT, HEIGHT)
+            self.columns.append(drop)
 
-    def update(self, push: float = 0.0) -> None:
+    def update(self, push: float = 0.0, energy: float = 0.0) -> None:
         for drop in self.columns:
-            drop.y += drop.speed
-            drop.sway = drop.sway * 0.85 + push * 0.15
-            if random.random() < 0.04:
+            if random.random() < 0.0025 + energy * 0.010:
+                drop.burst = random.uniform(1.7, 3.0)
+            drop.burst += (1.0 - drop.burst) * 0.055
+            drop.y += drop.speed * drop.burst * (1.0 + energy * 0.55)
+            drop.sway = drop.sway * 0.82 + push * 0.18
+            if random.random() < 0.085:
                 drop.chars[random.randrange(len(drop.chars))] = random.choice(MATRIX_CHARS)
             if drop.y - drop.length * self.char_h > HEIGHT:
                 drop.reset()
 
     def draw(self, surface, accent=None, accent_strength=0.0, tear=0.0, scatter=0.0):
         cx, cy = WIDTH // 2, HEIGHT // 2 + 20
-        half_w = int(lerp(0, WIDTH * 0.42, ease_out(tear)))
-        half_h = int(lerp(0, HEIGHT * 0.26, ease_out(tear)))
+        half_w = max(1, int(lerp(20, WIDTH * 0.38, ease_out(tear))))
+        half_h = max(1, int(lerp(12, HEIGHT * 0.24, ease_out(tear))))
         for drop in self.columns:
             for index, char in enumerate(drop.chars):
                 y = int(drop.y - index * self.char_h)
                 if y < TIME_HEIGHT or y > HEIGHT:
                     continue
                 x = int(drop.x + drop.sway)
-                if tear > 0 and half_w and half_h:
+                local_dim = 1.0
+                if tear > 0:
                     nx = abs(x - cx) / half_w
                     ny = abs(y - cy) / half_h
-                    if nx * nx + ny * ny < 1.0:
+                    distance = nx * nx + ny * ny
+                    if distance < 1.0:
                         direction = -1 if x < cx else 1
-                        x += int(direction * (1.0 - min(1.0, nx)) ** 2 * 90 * tear)
-                        y += int((y - cy) * 0.18 * tear)
-                        if random.random() < 0.60 * tear:
-                            continue
-                brightness = max(0.12, 1.0 - index / max(1, drop.length))
+                        bend = (1.0 - min(1.0, nx)) ** 2
+                        x += int(direction * bend * 54 * tear)
+                        y += int((y - cy) * 0.10 * tear)
+                        local_dim = 0.42 + 0.58 * distance
+                brightness = max(0.12, 1.0 - index / max(1, drop.length)) * local_dim
                 color = WHITE_GREEN if index == 0 else mix(DIM_GREEN, GREEN, brightness)
-                if accent and random.random() < accent_strength * (0.18 + brightness * 0.22):
-                    color = mix(color, accent, 0.72)
+                if accent and random.random() < accent_strength * (0.20 + brightness * 0.25):
+                    color = mix(color, accent, 0.70)
                 if scatter:
-                    x += int(random.uniform(-18, 18) * scatter)
+                    x += int(random.uniform(-16, 16) * scatter)
                     y += int(random.uniform(-5, 5) * scatter)
                 surface.blit(self.font.render(char, True, color), (x, y))
 
@@ -287,63 +318,64 @@ class MatrixOS:
             self.screen.blit(ghost, rect.move(random.randint(-4, 4), random.randint(-2, 2)))
         self.screen.blit(rendered, rect)
 
-    def draw_content(self, alpha: int, scale: float = 1.0, breakup: float = 0.0) -> None:
+    def glow_text(self, font, text: str, color, center, alpha: int, glow: int = 3):
+        for radius in range(glow, 0, -1):
+            ghost_alpha = max(8, alpha // (radius * 4))
+            ghost = font.render(text, True, (*color, ghost_alpha))
+            rect = ghost.get_rect(center=center)
+            for dx, dy in ((radius, 0), (-radius, 0), (0, radius), (0, -radius)):
+                self.screen.blit(ghost, rect.move(dx, dy))
+        rendered = font.render(text, True, (*color, alpha))
+        self.screen.blit(rendered, rendered.get_rect(center=center))
+
+    def draw_content(self, alpha: int, decode: float = 1.0, breakup: float = 0.0) -> None:
         accent = self.item.accent(self.data)
-        layer = pygame.Surface((WIDTH, HEIGHT - TIME_HEIGHT), pygame.SRCALPHA)
-        center_y = (HEIGHT - TIME_HEIGHT) // 2 + 10
-        title = self.title_font.render(self.item.title, True, (*accent, alpha))
-        value = self.value_font.render(self.item.value(self.data), True, (*accent, alpha))
-        title_rect = title.get_rect(center=(WIDTH // 2, center_y - 55))
-        value_rect = value.get_rect(center=(WIDTH // 2, center_y + 10))
-        if breakup:
-            jitter = int(20 * breakup)
-            title_rect.x += random.randint(-jitter, jitter)
-            value_rect.x += random.randint(-jitter, jitter)
-        layer.blit(title, (title_rect.x, title_rect.y - TIME_HEIGHT))
-        layer.blit(value, (value_rect.x, value_rect.y - TIME_HEIGHT))
+        center_y = TIME_HEIGHT + (HEIGHT - TIME_HEIGHT) // 2 + 8
+        title_text = decoded_text(self.item.title, decode)
+        value_text = decoded_text(self.item.value(self.data), max(0.0, (decode - 0.18) / 0.82))
+        jitter = int(14 * breakup)
+        offset_x = random.randint(-jitter, jitter) if jitter else 0
+        offset_y = random.randint(-3, 3) if breakup > 0.25 else 0
+        self.glow_text(self.title_font, title_text, accent, (WIDTH // 2 + offset_x, center_y - 58 + offset_y), alpha, 2)
+        self.glow_text(self.value_font, value_text, accent, (WIDTH // 2 - offset_x, center_y + 10 - offset_y), alpha, 4)
         subtitle = self.item.subtitle(self.data)
         if subtitle:
-            sub = self.subtitle_font.render(subtitle, True, (*accent, alpha))
-            rect = sub.get_rect(center=(WIDTH // 2, center_y + 72))
-            layer.blit(sub, (rect.x, rect.y - TIME_HEIGHT))
-        if scale != 1.0:
-            layer = pygame.transform.smoothscale(layer, (max(1, int(WIDTH * scale)), max(1, int((HEIGHT - TIME_HEIGHT) * scale))))
-            self.screen.blit(layer, layer.get_rect(center=(WIDTH // 2, TIME_HEIGHT + (HEIGHT - TIME_HEIGHT) // 2)))
-        else:
-            self.screen.blit(layer, (0, TIME_HEIGHT))
+            subtitle_text = decoded_text(subtitle, max(0.0, (decode - 0.42) / 0.58))
+            self.glow_text(self.subtitle_font, subtitle_text, accent, (WIDTH // 2, center_y + 76), alpha, 2)
 
     def draw(self) -> None:
         self.screen.fill(BLACK)
         elapsed = self.elapsed()
         accent = self.item.accent(self.data)
-        strength = tear = scatter = push = 0.0
+        strength = tear = scatter = push = energy = 0.0
         if self.phase == "prep":
             t = ease(elapsed / PREP_SECONDS)
-            strength, scatter = t, 0.10 * t
+            strength, scatter, energy = t, 0.08 * t, 0.30 * t
         elif self.phase == "tear":
             t = ease(elapsed / TEAR_SECONDS)
-            strength, tear, scatter = 1.0, t, 0.28 * t
+            strength, tear, scatter, energy = 1.0, t, 0.18 * t, 0.75
         elif self.phase == "hold":
-            strength, tear, scatter = 0.16, 1.0, 0.03
+            strength, tear, scatter, energy = 0.12, 0.78, 0.01, 0.10
         elif self.phase == "collapse":
             t = ease(elapsed / COLLAPSE_SECONDS)
-            strength, tear, scatter = 1.0 - t, 1.0 - t, 0.35 * t
+            strength, tear, scatter, energy = 1.0 - t, 0.78 * (1.0 - t), 0.38 * t, 0.65 * t
         if self.item.key == "wind" and self.phase in ("prep", "tear", "hold"):
             push = 5.5
-        self.rain.update(push)
+        self.rain.update(push, energy)
         self.rain.draw(self.screen, accent, strength, tear, scatter)
         if self.phase == "tear":
             t = ease_out(elapsed / TEAR_SECONDS)
-            self.draw_content(int(255 * t), lerp(0.88, 1.0, t))
+            alpha = int(255 * clamp((t - 0.08) / 0.92, 0.0, 1.0))
+            self.draw_content(alpha, t)
         elif self.phase == "hold":
-            self.draw_content(255, 1.0 + math.sin(time.monotonic() * 2.2) * 0.006)
+            self.draw_content(255, 1.0)
             if random.random() < 0.10:
                 y, h = random.randint(TIME_HEIGHT + 20, HEIGHT - 15), random.randint(1, 4)
                 strip = self.screen.subsurface((0, y, WIDTH, h)).copy()
                 self.screen.blit(strip, (random.randint(-10, 10), y))
         elif self.phase == "collapse":
             t = ease(elapsed / COLLAPSE_SECONDS)
-            self.draw_content(int(255 * (1.0 - t)), lerp(1.0, 1.07, t), t)
+            self.draw_content(int(255 * (1.0 - t)), 1.0 - t * 0.85, t)
         self.draw_time()
         pygame.display.flip()
 
