@@ -1,8 +1,18 @@
 # Matrix OS V8
 
-A cinematic Raspberry Pi Matrix display for a 480×320 screen.
+A cinematic Raspberry Pi Matrix display for a 480×320 screen, with an ESP32-S3 screen used as a Pi-controlled sidecar.
 
-## What it does
+## Architecture
+
+The Raspberry Pi is the brain:
+
+```text
+GitHub -> Raspberry Pi -> USB serial -> ESP32-S3 -> sidecar screen
+```
+
+The ESP32 does not fetch weather, crypto, or miner data on its own. The Pi collects and decides what to show, then sends one compact JSON event at a time to the ESP32 over USB.
+
+## Main Matrix display
 
 - Matrix rain is the main visual
 - Time stays centered at the top
@@ -24,7 +34,47 @@ chmod +x install.sh start_matrix.sh
 ./start_matrix.sh
 ```
 
-Because this repository is private, GitHub may ask you to sign in or use a personal access token when cloning it onto the Pi.
+## ESP32 sidecar
+
+Current detected hardware:
+
+- ESP32-S3
+- 16 MB flash
+- 8 MB PSRAM
+- USB Serial/JTAG
+
+The Pi bridge is at `pi/sidecar_bridge.py`. The ESP32 PlatformIO project is in `esp32/`.
+
+Install the Pi serial dependency:
+
+```bash
+python3 -m pip install pyserial
+```
+
+After the ESP32 firmware is flashed and connected to the Pi, test the link:
+
+```bash
+python3 pi/sidecar_bridge.py --port /dev/ttyACM0 --demo
+```
+
+Send one event manually:
+
+```bash
+python3 pi/sidecar_bridge.py \
+  --port /dev/ttyACM0 \
+  --kind weather \
+  --title OUTSIDE \
+  --value '90°F' \
+  --accent red
+```
+
+Example USB message sent by the Pi:
+
+```json
+{"kind":"weather","title":"OUTSIDE","value":"90°F","accent":"red","duration_ms":8000}
+```
+
+The ESP32 receiver is working as a serial protocol foundation. The exact screen driver and pin mapping will be added after the display board model is confirmed.
 
 ## Optional live data
 
@@ -47,4 +97,4 @@ git pull
 
 ## Current status
 
-This is the first GitHub version of Matrix OS V8. XRP uses a public live-price endpoint. Weather and room temperatures fall back to demo values until their live feeds are configured.
+Matrix OS V8 runs from the Pi. The new ESP32-S3 sidecar code keeps the Pi in control and uses USB as the first reliable connection method. XRP uses a public live-price endpoint. Weather and room temperatures fall back to demo values until their live feeds are configured.
