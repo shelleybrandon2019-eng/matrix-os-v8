@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Matrix OS V8 cinematic Raspberry Pi display.
+"""Matrix OS V8 — live-data build.
 
-Hard-cut glyph reveals, continuous Matrix rain, shatter collapse, live weather,
-room temperatures and XRP/USD pricing with automatic source fallback.
+No hard-coded temperatures. Outside weather comes from the configured WU
+station when a key exists, otherwise Open-Meteo for Grove City. Front-room
+and bedroom values come directly from the two Govee BLE sensors.
 """
 
+import asyncio
 import math
 import os
 import random
@@ -27,59 +29,49 @@ FULLSCREEN = os.getenv("MATRIX_FULLSCREEN", "1") != "0"
 TIME_HEIGHT = 58
 TIME_FORMAT = "%I:%M %p"
 
-IDLE_MIN_SECONDS, IDLE_MAX_SECONDS = 8, 15
+IDLE_MIN_SECONDS, IDLE_MAX_SECONDS = 8, 14
 HOLD_SECONDS = 7.0
-OS_HOLD_SECONDS = 1.35
-OS_GLIMPSE_CHANCE = 0.28
-CELL_STAGGER = 0.022
-FLICKER_FRAMES_MIN, FLICKER_FRAMES_MAX = 2, 5
-GLITCH_RELOCK_CHANCE = 0.012
-SHATTER_SPEED_MIN, SHATTER_SPEED_MAX = 85.0, 220.0
+CELL_STAGGER = 0.024
 SHATTER_LIFETIME = 0.62
-REVEAL_TIMEOUT_PAD = 0.8
 
-DATA_REFRESH_SECONDS = 180
+WEATHER_REFRESH_SECONDS = 60
+GOVEE_REFRESH_SECONDS = 15
 XRP_REFRESH_SECONDS = 30
+LATITUDE = float(os.getenv("MATRIX_LATITUDE", "39.8815"))
+LONGITUDE = float(os.getenv("MATRIX_LONGITUDE", "-83.0930"))
 WU_STATION_ID = os.getenv("WU_STATION_ID", "KOHGROVE130")
 WU_API_KEY = os.getenv("WU_API_KEY", "")
-FRONT_ROOM_URL = os.getenv("FRONT_ROOM_URL", "")
-BEDROOM_URL = os.getenv("BEDROOM_URL", "")
+FRONT_ROOM_MAC = os.getenv("FRONT_ROOM_MAC", "A4:C1:38:21:0C:F2").upper()
+BEDROOM_MAC = os.getenv("BEDROOM_MAC", "A4:C1:38:17:EC:09").upper()
 
 XRP_SOURCES = (
-    ("Coinbase", "https://api.coinbase.com/v2/prices/XRP-USD/spot"),
-    ("CoinGecko", "https://api.coingecko.com/api/v3/simple/price?ids=ripple&vs_currencies=usd"),
-    ("Kraken", "https://api.kraken.com/0/public/Ticker?pair=XRPUSD"),
+    ("COINBASE", "https://api.coinbase.com/v2/prices/XRP-USD/spot"),
+    ("COINGECKO", "https://api.coingecko.com/api/v3/simple/price?ids=ripple&vs_currencies=usd"),
+    ("KRAKEN", "https://api.kraken.com/0/public/Ticker?pair=XRPUSD"),
 )
 
 MATRIX_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz@#$%&*+=<>?/\\|ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎ"
-OS_GLIMPSES = [
-    "ACCESSING...",
-    "WEATHER MODULE ONLINE",
-    "CAMERA LINK ACTIVE",
-    "GOVEE LINK ACTIVE",
-    "CRYPTO FEED ONLINE",
-]
-
 GREEN = (0, 255, 70)
 DIM_GREEN = (0, 92, 34)
 WHITE_GREEN = (185, 255, 205)
 BLACK = (0, 0, 0)
 
 
-def clamp(value: float, low: float, high: float) -> float:
+def clamp(value, low, high):
     return max(low, min(high, value))
 
 
-def lerp(a: float, b: float, t: float) -> float:
-    return a + (b - a) * t
+def lerp(a, b, t):
+    return a + (b - a) * clamp(t, 0.0, 1.0)
 
 
-def mix(a: Tuple[int, int, int], b: Tuple[int, int, int], t: float):
-    t = clamp(t, 0.0, 1.0)
+def mix(a, b, t):
     return tuple(int(lerp(a[i], b[i], t)) for i in range(3))
 
 
-def temp_color(temp_f: float) -> Tuple[int, int, int]:
+def temp_color(temp_f: Optional[float]):
+    if temp_f is None:
+        return GREEN
     if temp_f < 55:
         return (40, 145, 255)
     if temp_f < 66:
@@ -97,11 +89,7 @@ def get_json(url: str) -> Optional[dict]:
     if not url or requests is None:
         return None
     try:
-        response = requests.get(
-            url,
-            timeout=5,
-            headers={"User-Agent": "MatrixOS-V8/1.0"},
-        )
+        response = requests.get(url, timeout=6, headers={"User-Agent": "MatrixOS-V8/2.0"})
         response.raise_for_status()
         payload = response.json()
         return payload if isinstance(payload, dict) else None
@@ -109,18 +97,21 @@ def get_json(url: str) -> Optional[dict]:
         return None
 
 
-def fetch_xrp_price() -> Tuple[Optional[float], str]:
-    """Fetch XRP/USD using independent spot-price sources in priority order."""
+def cardinal(degrees: float) -> str:
+    points = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
+    return points[int((degrees + 11.25) / 22.5) % 16]
+
+
+def fetch_xrp() -> Tuple[Optional[float], str]:
     for source, url in XRP_SOURCES:
         payload = get_json(url)
         try:
-            if source == "Coinbase":
+            if source == "COINBASE":
                 price = float(payload["data"]["amount"])
-            elif source == "CoinGecko":
+            elif source == "COINGECKO":
                 price = float(payload["ripple"]["usd"])
             else:
-                result = payload.get("result", {})
-                ticker = next(iter(result.values()))
+                ticker = next(iter(payload.get("result", {}).values()))
                 price = float(ticker["c"][0])
             if 0.01 < price < 1000:
                 return price, source
@@ -129,82 +120,152 @@ def fetch_xrp_price() -> Tuple[Optional[float], str]:
     return None, "STALE"
 
 
-def cardinal(degrees: float) -> str:
-    points = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
-    return points[int((degrees + 11.25) / 22.5) % 16]
+def decode_govee_temperature(manufacturer_data: dict) -> Optional[float]:
+    """Decode Govee H5074/H5075-style advertisements."""
+    for raw in manufacturer_data.values():
+        data = bytes(raw)
+        candidates = []
+        if len(data) >= 3:
+            candidates.append(int.from_bytes(data[-3:], "big"))
+        if len(data) >= 6:
+            candidates.append(int.from_bytes(data[3:6], "big"))
+        for packed in candidates:
+            negative = bool(packed & 0x800000)
+            packed &= 0x7FFFFF
+            temp_c = (packed // 1000) / 10.0
+            if negative:
+                temp_c = -temp_c
+            if -40.0 <= temp_c <= 85.0:
+                return temp_c * 9.0 / 5.0 + 32.0
+    return None
 
 
 @dataclass
 class LiveData:
-    outside_f: float = 90.0
-    front_f: float = 72.0
-    bedroom_f: float = 68.0
-    wind_mph: float = 8.0
-    wind_dir: str = "SW"
-    xrp_usd: float = 0.0
+    outside_f: Optional[float] = None
+    front_f: Optional[float] = None
+    bedroom_f: Optional[float] = None
+    wind_mph: Optional[float] = None
+    wind_dir: str = ""
+    xrp_usd: Optional[float] = None
+    weather_source: str = "WAITING"
+    govee_source: str = "WAITING"
     xrp_source: str = "WAITING"
-    last_refresh: float = -9999.0
-    last_xrp_refresh: float = -9999.0
-    _refreshing: bool = field(default=False, init=False, repr=False)
+    last_weather: float = -9999.0
+    last_govee: float = -9999.0
+    last_xrp: float = -9999.0
+    _http_busy: bool = field(default=False, init=False, repr=False)
+    _ble_busy: bool = field(default=False, init=False, repr=False)
 
-    def refresh(self) -> None:
-        """Never block the animation loop while HTTP requests are running."""
+    def refresh(self):
         now = time.monotonic()
-        weather_due = now - self.last_refresh >= DATA_REFRESH_SECONDS
-        xrp_due = now - self.last_xrp_refresh >= XRP_REFRESH_SECONDS
-        if self._refreshing or not (weather_due or xrp_due):
-            return
-        self._refreshing = True
-        threading.Thread(
-            target=self._refresh_worker,
-            args=(weather_due, xrp_due),
-            daemon=True,
-        ).start()
+        weather_due = now - self.last_weather >= WEATHER_REFRESH_SECONDS
+        xrp_due = now - self.last_xrp >= XRP_REFRESH_SECONDS
+        govee_due = now - self.last_govee >= GOVEE_REFRESH_SECONDS
 
-    def _refresh_worker(self, weather_due: bool, xrp_due: bool) -> None:
+        if (weather_due or xrp_due) and not self._http_busy:
+            self._http_busy = True
+            threading.Thread(target=self._http_worker, args=(weather_due, xrp_due), daemon=True).start()
+        if govee_due and not self._ble_busy:
+            self._ble_busy = True
+            threading.Thread(target=self._ble_worker, daemon=True).start()
+
+    def _http_worker(self, weather_due, xrp_due):
         try:
             if weather_due:
                 self.refresh_weather()
-                self.refresh_room(FRONT_ROOM_URL, "front_f")
-                self.refresh_room(BEDROOM_URL, "bedroom_f")
-                self.last_refresh = time.monotonic()
+                self.last_weather = time.monotonic()
             if xrp_due:
-                price, source = fetch_xrp_price()
+                price, source = fetch_xrp()
                 if price is not None:
                     self.xrp_usd = price
-                    self.xrp_source = source.upper()
-                self.last_xrp_refresh = time.monotonic()
+                    self.xrp_source = source
+                else:
+                    self.xrp_source = "STALE"
+                self.last_xrp = time.monotonic()
         finally:
-            self._refreshing = False
+            self._http_busy = False
 
-    def refresh_weather(self) -> None:
-        if not WU_API_KEY:
-            return
+    def refresh_weather(self):
+        if WU_API_KEY:
+            url = (
+                "https://api.weather.com/v2/pws/observations/current"
+                f"?stationId={WU_STATION_ID}&format=json&units=e&apiKey={WU_API_KEY}"
+            )
+            payload = get_json(url)
+            try:
+                observation = payload["observations"][0]
+                imperial = observation.get("imperial", {})
+                temp = imperial.get("temp")
+                wind = imperial.get("windSpeed")
+                direction = observation.get("winddir")
+                if isinstance(temp, (int, float)):
+                    self.outside_f = float(temp)
+                if isinstance(wind, (int, float)):
+                    self.wind_mph = float(wind)
+                if isinstance(direction, (int, float)):
+                    self.wind_dir = cardinal(float(direction))
+                if self.outside_f is not None:
+                    self.weather_source = WU_STATION_ID
+                    return
+            except Exception:
+                pass
+
         url = (
-            "https://api.weather.com/v2/pws/observations/current"
-            f"?stationId={WU_STATION_ID}&format=json&units=e&apiKey={WU_API_KEY}"
+            "https://api.open-meteo.com/v1/forecast"
+            f"?latitude={LATITUDE}&longitude={LONGITUDE}"
+            "&current=temperature_2m,wind_speed_10m,wind_direction_10m"
+            "&temperature_unit=fahrenheit&wind_speed_unit=mph"
         )
         payload = get_json(url)
         try:
-            observation = payload["observations"][0]
-            imperial = observation.get("imperial", {})
-            if isinstance(imperial.get("temp"), (int, float)):
-                self.outside_f = float(imperial["temp"])
-            if isinstance(imperial.get("windSpeed"), (int, float)):
-                self.wind_mph = float(imperial["windSpeed"])
-            if isinstance(observation.get("winddir"), (int, float)):
-                self.wind_dir = cardinal(float(observation["winddir"]))
+            current = payload["current"]
+            temp = current.get("temperature_2m")
+            wind = current.get("wind_speed_10m")
+            direction = current.get("wind_direction_10m")
+            if isinstance(temp, (int, float)):
+                self.outside_f = float(temp)
+            if isinstance(wind, (int, float)):
+                self.wind_mph = float(wind)
+            if isinstance(direction, (int, float)):
+                self.wind_dir = cardinal(float(direction))
+            self.weather_source = "OPEN-METEO" if self.outside_f is not None else "STALE"
         except Exception:
-            pass
+            self.weather_source = "STALE"
 
-    def refresh_room(self, url: str, field_name: str) -> None:
-        payload = get_json(url)
-        if not payload:
-            return
-        for key in ("temperature", "temp", "temperature_f", "temp_f"):
-            if isinstance(payload.get(key), (int, float)):
-                setattr(self, field_name, float(payload[key]))
+    def _ble_worker(self):
+        try:
+            try:
+                from bleak import BleakScanner
+            except ImportError:
+                self.govee_source = "INSTALL BLEAK"
                 return
+
+            async def scan_once():
+                found = {}
+                devices = await BleakScanner.discover(timeout=8.0, return_adv=True)
+                for address, pair in devices.items():
+                    device, adv = pair
+                    mac = (getattr(device, "address", "") or address).upper()
+                    if mac not in (FRONT_ROOM_MAC, BEDROOM_MAC):
+                        continue
+                    temp = decode_govee_temperature(getattr(adv, "manufacturer_data", {}) or {})
+                    if temp is not None:
+                        found[mac] = temp
+                return found
+
+            readings = asyncio.run(scan_once())
+            if FRONT_ROOM_MAC in readings:
+                self.front_f = readings[FRONT_ROOM_MAC]
+            if BEDROOM_MAC in readings:
+                self.bedroom_f = readings[BEDROOM_MAC]
+            self.govee_source = "GOVEE BLE" if readings else "GOVEE NOT FOUND"
+        except Exception as exc:
+            self.govee_source = "BLE ERROR"
+            print(f"Govee scan failed: {exc}", file=sys.stderr)
+        finally:
+            self.last_govee = time.monotonic()
+            self._ble_busy = False
 
 
 @dataclass
@@ -213,15 +274,19 @@ class Reveal:
     title: str
     value: Callable[[LiveData], str]
     accent: Callable[[LiveData], Tuple[int, int, int]]
-    subtitle: Callable[[LiveData], str] = lambda _: ""
+    subtitle: Callable[[LiveData], str]
+
+
+def temp_text(value):
+    return "WAITING" if value is None else f"{value:.0f}°"
 
 
 REVEALS = [
-    Reveal("outside", "OUTSIDE", lambda d: f"{d.outside_f:.0f}°", lambda d: temp_color(d.outside_f)),
-    Reveal("front", "FRONT ROOM", lambda d: f"{d.front_f:.0f}°", lambda d: temp_color(d.front_f)),
-    Reveal("bedroom", "BEDROOM", lambda d: f"{d.bedroom_f:.0f}°", lambda d: temp_color(d.bedroom_f)),
-    Reveal("wind", "WIND", lambda d: f"{d.wind_mph:.0f} MPH", lambda _: (80, 205, 255), lambda d: d.wind_dir),
-    Reveal("xrp", "XRP", lambda d: "UPDATING" if d.xrp_usd <= 0 else f"${d.xrp_usd:,.4f}", lambda _: (115, 205, 255), lambda d: d.xrp_source),
+    Reveal("outside", "OUTSIDE", lambda d: temp_text(d.outside_f), lambda d: temp_color(d.outside_f), lambda d: d.weather_source),
+    Reveal("front", "FRONT ROOM", lambda d: temp_text(d.front_f), lambda d: temp_color(d.front_f), lambda d: d.govee_source),
+    Reveal("bedroom", "BEDROOM", lambda d: temp_text(d.bedroom_f), lambda d: temp_color(d.bedroom_f), lambda d: d.govee_source),
+    Reveal("wind", "WIND", lambda d: "WAITING" if d.wind_mph is None else f"{d.wind_mph:.0f} MPH", lambda d: (80, 205, 255), lambda d: d.wind_dir or d.weather_source),
+    Reveal("xrp", "XRP", lambda d: "UPDATING" if d.xrp_usd is None else f"${d.xrp_usd:,.4f}", lambda d: (115, 205, 255), lambda d: d.xrp_source),
 ]
 
 
@@ -235,57 +300,48 @@ class Drop:
     sway: float = 0.0
     burst: float = 1.0
 
-    def reset(self) -> None:
+    def reset(self):
         self.y = random.uniform(-HEIGHT, -10)
-        roll = random.random()
-        if roll < 0.10:
-            self.speed = random.uniform(12.0, 18.0)
-        elif roll < 0.32:
-            self.speed = random.uniform(7.5, 12.0)
-        else:
-            self.speed = random.uniform(4.2, 8.0)
+        self.speed = random.uniform(4.2, 15.0)
         self.length = random.randint(8, 20)
         self.chars = [random.choice(MATRIX_CHARS) for _ in range(self.length)]
         self.burst = 1.0
 
 
 class MatrixRain:
-    def __init__(self, font: pygame.font.Font):
+    def __init__(self, font):
         self.font = font
         self.char_w = max(11, font.size("W")[0])
         self.char_h = max(15, font.get_linesize())
-        self.columns: List[Drop] = []
+        self.columns = []
         for x in range(0, WIDTH + self.char_w, self.char_w):
-            length = random.randint(8, 20)
-            drop = Drop(x, random.uniform(-HEIGHT, HEIGHT), 5.0, length, [random.choice(MATRIX_CHARS) for _ in range(length)])
+            drop = Drop(x, random.uniform(-HEIGHT, HEIGHT), 5.0, 12, [])
             drop.reset()
             drop.y = random.uniform(-HEIGHT, HEIGHT)
             self.columns.append(drop)
 
-    def update(self, push: float = 0.0, energy: float = 0.0) -> None:
+    def update(self, energy=0.0):
         for drop in self.columns:
-            if random.random() < 0.0025 + energy * 0.010:
-                drop.burst = random.uniform(1.7, 3.0)
+            if random.random() < 0.003 + energy * 0.01:
+                drop.burst = random.uniform(1.5, 2.8)
             drop.burst += (1.0 - drop.burst) * 0.055
-            drop.y += drop.speed * drop.burst * (1.0 + energy * 0.55)
-            drop.sway = drop.sway * 0.82 + push * 0.18
+            drop.y += drop.speed * drop.burst * (1.0 + energy * 0.45)
             if random.random() < 0.085:
                 drop.chars[random.randrange(len(drop.chars))] = random.choice(MATRIX_CHARS)
             if drop.y - drop.length * self.char_h > HEIGHT:
                 drop.reset()
 
-    def draw(self, surface, accent=None, accent_strength: float = 0.0) -> None:
+    def draw(self, surface, accent=None, strength=0.0):
         for drop in self.columns:
             for index, char in enumerate(drop.chars):
                 y = int(drop.y - index * self.char_h)
                 if y < TIME_HEIGHT or y > HEIGHT:
                     continue
-                x = int(drop.x + drop.sway)
                 brightness = max(0.12, 1.0 - index / max(1, drop.length))
                 color = WHITE_GREEN if index == 0 else mix(DIM_GREEN, GREEN, brightness)
-                if accent and random.random() < accent_strength * (0.20 + brightness * 0.25):
-                    color = mix(color, accent, 0.70)
-                surface.blit(self.font.render(char, True, color), (x, y))
+                if accent and random.random() < strength * (0.2 + brightness * 0.25):
+                    color = mix(color, accent, 0.7)
+                surface.blit(self.font.render(char, True, color), (drop.x, y))
 
 
 @dataclass
@@ -297,73 +353,46 @@ class Cell:
     font: pygame.font.Font
     reveal_at: float
     state: str = "hidden"
-    flicker_left: int = 0
-    display_char: str = ""
+    flicker: int = 0
+    shown: str = ""
     vx: float = 0.0
     vy: float = 0.0
     shatter_t: float = 0.0
 
 
 class RevealEngine:
-    def __init__(self, lines: List[Tuple[str, pygame.font.Font, Tuple[int, int, int], int]]):
-        self.cells: List[Cell] = []
-        reveal_order: List[Cell] = []
+    def __init__(self, lines):
+        self.cells = []
+        order = []
         for text, font, color, center_y in lines:
-            if not text:
-                continue
             char_w = font.size("M")[0]
-            total_w = char_w * len(text)
-            start_x = WIDTH / 2 - total_w / 2
+            start_x = WIDTH / 2 - char_w * len(text) / 2
             for i, ch in enumerate(text):
                 if ch == " ":
                     continue
                 cell = Cell(ch, start_x + i * char_w, center_y, color, font, 0.0)
                 self.cells.append(cell)
-                reveal_order.append(cell)
-        random.shuffle(reveal_order)
-        for i, cell in enumerate(reveal_order):
+                order.append(cell)
+        random.shuffle(order)
+        for i, cell in enumerate(order):
             cell.reveal_at = i * CELL_STAGGER
-        self.duration = len(reveal_order) * CELL_STAGGER + REVEAL_TIMEOUT_PAD
         self.elapsed = 0.0
-        self.shattering = False
+        self.duration = len(order) * CELL_STAGGER + 0.9
 
-    def is_revealed(self) -> bool:
-        return all(c.state in ("locked", "shatter", "gone") for c in self.cells)
-
-    def is_gone(self) -> bool:
-        return all(c.state == "gone" for c in self.cells)
-
-    def start_shatter(self) -> None:
-        if self.shattering:
-            return
-        self.shattering = True
-        cx, cy = WIDTH / 2, HEIGHT / 2
-        for cell in self.cells:
-            if cell.state == "gone":
-                continue
-            dx, dy = cell.x - cx, cell.y - cy
-            distance = math.hypot(dx, dy) or 1.0
-            speed = random.uniform(SHATTER_SPEED_MIN, SHATTER_SPEED_MAX)
-            cell.vx = dx / distance * speed + random.uniform(-35, 35)
-            cell.vy = dy / distance * speed + random.uniform(-35, 35)
-            cell.state = "shatter"
-            cell.shatter_t = 0.0
-
-    def update(self, dt: float) -> None:
+    def update(self, dt):
         self.elapsed += dt
         for cell in self.cells:
             if cell.state == "hidden" and self.elapsed >= cell.reveal_at:
                 cell.state = "flicker"
-                cell.flicker_left = random.randint(FLICKER_FRAMES_MIN, FLICKER_FRAMES_MAX)
-                cell.display_char = random.choice(MATRIX_CHARS)
+                cell.flicker = random.randint(2, 5)
             elif cell.state == "flicker":
-                cell.display_char = random.choice(MATRIX_CHARS)
-                cell.flicker_left -= 1
-                if cell.flicker_left <= 0:
+                cell.shown = random.choice(MATRIX_CHARS)
+                cell.flicker -= 1
+                if cell.flicker <= 0:
                     cell.state = "locked"
-                    cell.display_char = cell.char
+                    cell.shown = cell.char
             elif cell.state == "locked":
-                cell.display_char = random.choice(MATRIX_CHARS) if random.random() < GLITCH_RELOCK_CHANCE else cell.char
+                cell.shown = random.choice(MATRIX_CHARS) if random.random() < 0.012 else cell.char
             elif cell.state == "shatter":
                 cell.x += cell.vx * dt
                 cell.y += cell.vy * dt
@@ -371,11 +400,27 @@ class RevealEngine:
                 if cell.shatter_t >= SHATTER_LIFETIME:
                     cell.state = "gone"
 
-    def draw(self, surface) -> None:
+    def revealed(self):
+        return all(c.state in ("locked", "shatter", "gone") for c in self.cells)
+
+    def gone(self):
+        return all(c.state == "gone" for c in self.cells)
+
+    def shatter(self):
+        cx, cy = WIDTH / 2, HEIGHT / 2
+        for cell in self.cells:
+            dx, dy = cell.x - cx, cell.y - cy
+            distance = math.hypot(dx, dy) or 1.0
+            speed = random.uniform(85, 220)
+            cell.vx = dx / distance * speed + random.uniform(-35, 35)
+            cell.vy = dy / distance * speed + random.uniform(-35, 35)
+            cell.state = "shatter"
+
+    def draw(self, surface):
         for cell in self.cells:
             if cell.state in ("hidden", "gone") or cell.y < TIME_HEIGHT:
                 continue
-            surface.blit(cell.font.render(cell.display_char, True, cell.color), (cell.x, cell.y))
+            surface.blit(cell.font.render(cell.shown or random.choice(MATRIX_CHARS), True, cell.color), (cell.x, cell.y))
 
 
 class MatrixOS:
@@ -384,111 +429,76 @@ class MatrixOS:
         flags = pygame.FULLSCREEN if FULLSCREEN else 0
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT), flags)
         pygame.mouse.set_visible(False)
-        pygame.display.set_caption("Matrix OS V8")
         self.clock = pygame.time.Clock()
         self.matrix_font = pygame.font.SysFont("DejaVu Sans Mono", 17, bold=True)
         self.time_font = pygame.font.SysFont("DejaVu Sans Mono", 38, bold=True)
         self.title_font = pygame.font.SysFont("DejaVu Sans Mono", 25, bold=True)
         self.value_font = pygame.font.SysFont("DejaVu Sans Mono", 66, bold=True)
-        self.subtitle_font = pygame.font.SysFont("DejaVu Sans Mono", 22, bold=True)
-        self.glimpse_font = pygame.font.SysFont("DejaVu Sans Mono", 22, bold=True)
+        self.subtitle_font = pygame.font.SysFont("DejaVu Sans Mono", 20, bold=True)
         self.rain = MatrixRain(self.matrix_font)
         self.data = LiveData()
         self.phase = "idle"
         self.phase_start = time.monotonic()
         self.idle_duration = random.uniform(IDLE_MIN_SECONDS, IDLE_MAX_SECONDS)
         self.index = -1
-        self.item: Optional[Reveal] = None
-        self.is_glimpse = False
-        self.engine: Optional[RevealEngine] = None
-        self.clock_glitch_until = 0.0
+        self.item = None
+        self.engine = None
 
-    def elapsed(self) -> float:
-        return time.monotonic() - self.phase_start
+    def set_phase(self, phase):
+        self.phase = phase
+        self.phase_start = time.monotonic()
 
-    def set_phase(self, phase: str) -> None:
-        self.phase, self.phase_start = phase, time.monotonic()
-
-    def next_item(self) -> None:
+    def begin_reveal(self):
         self.index = (self.index + 1) % len(REVEALS)
         self.item = REVEALS[self.index]
-
-    def begin_reveal(self) -> None:
-        if random.random() < OS_GLIMPSE_CHANCE:
-            self.is_glimpse = True
-            lines = [(random.choice(OS_GLIMPSES), self.glimpse_font, (120, 230, 160), HEIGHT // 2 - 10)]
-            self.engine = RevealEngine(lines)
-        else:
-            self.is_glimpse = False
-            self.next_item()
-            accent = self.item.accent(self.data)
-            center_y = TIME_HEIGHT + (HEIGHT - TIME_HEIGHT) // 2 + 8
-            lines = [
-                (self.item.title, self.title_font, accent, center_y - 58),
-                (self.item.value(self.data), self.value_font, accent, center_y + 10),
-            ]
-            subtitle = self.item.subtitle(self.data)
-            if subtitle:
-                lines.append((subtitle, self.subtitle_font, accent, center_y + 76))
-            self.engine = RevealEngine(lines)
+        accent = self.item.accent(self.data)
+        center_y = TIME_HEIGHT + (HEIGHT - TIME_HEIGHT) // 2 + 8
+        lines = [
+            (self.item.title, self.title_font, accent, center_y - 58),
+            (self.item.value(self.data), self.value_font, accent, center_y + 10),
+            (self.item.subtitle(self.data), self.subtitle_font, accent, center_y + 76),
+        ]
+        self.engine = RevealEngine(lines)
         self.set_phase("reveal")
 
-    def update_state(self, dt: float) -> None:
-        elapsed = self.elapsed()
+    def update_state(self, dt):
+        elapsed = time.monotonic() - self.phase_start
         if self.phase == "idle":
-            if random.random() < 0.0007:
-                self.clock_glitch_until = time.monotonic() + random.uniform(0.08, 0.22)
             if elapsed >= self.idle_duration:
                 self.begin_reveal()
         elif self.phase == "reveal":
             self.engine.update(dt)
-            if self.engine.is_revealed() or elapsed >= self.engine.duration:
+            if self.engine.revealed() or elapsed >= self.engine.duration:
                 self.set_phase("hold")
         elif self.phase == "hold":
             self.engine.update(dt)
-            hold_target = OS_HOLD_SECONDS if self.is_glimpse else HOLD_SECONDS
-            if elapsed >= hold_target:
-                self.engine.start_shatter()
+            if elapsed >= HOLD_SECONDS:
+                self.engine.shatter()
                 self.set_phase("shatter")
         elif self.phase == "shatter":
             self.engine.update(dt)
-            if self.engine.is_gone() or elapsed >= SHATTER_LIFETIME + REVEAL_TIMEOUT_PAD:
+            if self.engine.gone() or elapsed >= SHATTER_LIFETIME + 0.9:
                 self.engine = None
                 self.idle_duration = random.uniform(IDLE_MIN_SECONDS, IDLE_MAX_SECONDS)
                 self.set_phase("idle")
 
-    def draw_time(self) -> None:
+    def draw_time(self):
         text = datetime.now().strftime(TIME_FORMAT).lstrip("0")
-        glitch = time.monotonic() < self.clock_glitch_until
-        rendered = self.time_font.render(text, True, GREEN)
-        rect = rendered.get_rect(center=(WIDTH // 2 + (random.randint(-5, 5) if glitch else 0), TIME_HEIGHT // 2 + 2))
-        if glitch:
-            ghost = self.time_font.render(text, True, (0, 110, 255))
-            self.screen.blit(ghost, rect.move(random.randint(-4, 4), random.randint(-2, 2)))
-        self.screen.blit(rendered, rect)
+        image = self.time_font.render(text, True, GREEN)
+        self.screen.blit(image, image.get_rect(center=(WIDTH // 2, TIME_HEIGHT // 2 + 2)))
 
-    def draw(self) -> None:
+    def draw(self):
         self.screen.fill(BLACK)
-        accent = None
-        strength = 0.0
-        energy = 0.0
-        push = 0.0
-        if self.phase in ("reveal", "hold", "shatter") and not self.is_glimpse and self.item:
-            accent = self.item.accent(self.data)
-            strength = 0.55 if self.phase == "reveal" else 0.15
-            energy = 0.35 if self.phase == "reveal" else 0.10
-            if self.item.key == "wind":
-                push = 5.5
-        elif self.phase in ("reveal", "hold", "shatter") and self.is_glimpse:
-            strength, energy = 0.20, 0.15
-        self.rain.update(push, energy)
-        self.rain.draw(self.screen, accent, strength)
-        if self.engine is not None:
+        accent = self.item.accent(self.data) if self.item and self.phase != "idle" else None
+        energy = 0.32 if self.phase == "reveal" else 0.08
+        self.rain.update(energy)
+        self.rain.draw(self.screen, accent, 0.5 if self.phase == "reveal" else 0.12)
+        if self.engine:
             self.engine.draw(self.screen)
         self.draw_time()
         pygame.display.flip()
 
-    def run(self) -> None:
+    def run(self):
         last = time.monotonic()
         while True:
             for event in pygame.event.get():
@@ -508,7 +518,7 @@ class MatrixOS:
             self.clock.tick(FPS)
 
 
-def main() -> int:
+def main():
     try:
         MatrixOS().run()
         return 0
