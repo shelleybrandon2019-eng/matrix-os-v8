@@ -16,18 +16,17 @@ FPS = 60
 FULLSCREEN = os.getenv("MATRIX_FULLSCREEN", "1") != "0"
 
 
-def choose_font(size: int, bold: bool = False) -> pygame.font.Font:
-    preferred = [
-        "Liberation Mono",
-        "DejaVu Sans Mono",
-        "Noto Sans Mono",
-        "monospace",
-    ]
+def choose_font(size: int) -> pygame.font.Font:
+    preferred = ["Liberation Mono", "DejaVu Sans Mono", "Noto Sans Mono", "monospace"]
     for name in preferred:
-        path = pygame.font.match_font(name, bold=bold)
+        path = pygame.font.match_font(name)
         if path:
             return pygame.font.Font(path, size)
     return pygame.font.Font(None, size)
+
+
+def format_temp(value):
+    return "--°F" if value is None else f"{value:.0f}°F"
 
 
 class MatrixOS:
@@ -40,60 +39,56 @@ class MatrixOS:
         self.clock = pygame.time.Clock()
 
         self.rain_font = choose_font(15)
-        self.clock_font = choose_font(42)
-        self.label_font = choose_font(18)
-        self.value_font = choose_font(39)
-        self.small_font = choose_font(14)
+        self.clock_font = choose_font(34)
+        self.label_font = choose_font(16)
+        self.value_font = choose_font(31)
+        self.small_font = choose_font(12)
 
         self.engine = MatrixEngine(WIDTH, HEIGHT, self.rain_font)
         self.data = LiveData()
         self.data.refresh(force=True)
-        self.next_glitch = time.monotonic() + random.uniform(2.0, 5.0)
+        self.next_glitch = time.monotonic() + random.uniform(3.0, 7.0)
         self.glitch_until = 0.0
 
-    def glow_text(self, text: str, font: pygame.font.Font, center, color=GREEN, glow=2) -> None:
+    def glow_text(self, text, font, center, color=GREEN, glow=1):
         base = font.render(text, True, color)
         rect = base.get_rect(center=center)
         for radius in range(glow, 0, -1):
-            ghost = font.render(text, True, tuple(max(0, c // (radius + 1)) for c in color))
+            dim = tuple(max(0, c // (radius + 2)) for c in color)
+            ghost = font.render(text, True, dim)
             for dx, dy in ((radius, 0), (-radius, 0), (0, radius), (0, -radius)):
                 self.screen.blit(ghost, rect.move(dx, dy))
         self.screen.blit(base, rect)
 
-    def draw_clock(self) -> None:
+    def draw_clock(self):
         now = datetime.now()
         text = now.strftime("%I:%M:%S %p").lstrip("0")
-        date_text = now.strftime("%A  %B %d, %Y").upper()
         if time.monotonic() > self.next_glitch:
-            self.glitch_until = time.monotonic() + random.uniform(0.06, 0.18)
-            self.next_glitch = time.monotonic() + random.uniform(2.5, 6.0)
-        x = WIDTH // 2
-        if time.monotonic() < self.glitch_until:
-            x += random.randint(-7, 7)
-        self.glow_text(text, self.clock_font, (x, 49), HEAD_GREEN, 2)
-        self.glow_text(date_text, self.small_font, (WIDTH // 2, 78), GREEN, 1)
+            self.glitch_until = time.monotonic() + random.uniform(0.05, 0.14)
+            self.next_glitch = time.monotonic() + random.uniform(3.0, 7.0)
+        x = WIDTH // 2 + (random.randint(-4, 4) if time.monotonic() < self.glitch_until else 0)
+        self.glow_text(text, self.clock_font, (x, 38), HEAD_GREEN, 1)
 
-    def draw_xrp(self) -> None:
-        self.glow_text("XRP", self.label_font, (WIDTH // 2, 218), GREEN, 1)
-        if self.data.xrp_usd is None:
-            value = self.data.error or "LOADING"
-            font = self.label_font
-        else:
-            value = f"${self.data.xrp_usd:,.4f}"
-            font = self.value_font
-        self.glow_text(value, font, (WIDTH // 2, 255), HEAD_GREEN, 2)
-        status = self.data.error if self.data.error else "LIVE FEED"
-        self.glow_text(status, self.small_font, (WIDTH // 2, 287), GREEN, 1)
+    def draw_temperatures(self):
+        items = [
+            ("FRONT ROOM", self.data.front_room_f, 120, 115),
+            ("BEDROOM", self.data.bedroom_f, 360, 115),
+            ("INSIDE", self.data.inside_f, 120, 235),
+            ("OUTSIDE", self.data.outside_f, 360, 235),
+        ]
+        for label, value, x, y in items:
+            self.glow_text(label, self.label_font, (x, y - 24), GREEN, 1)
+            self.glow_text(format_temp(value), self.value_font, (x, y + 12), HEAD_GREEN, 1)
 
-    def draw(self) -> None:
+    def draw(self):
         self.screen.fill((0, 0, 0))
         self.engine.update()
         self.engine.draw(self.screen)
         self.draw_clock()
-        self.draw_xrp()
+        self.draw_temperatures()
         pygame.display.flip()
 
-    def run(self) -> None:
+    def run(self):
         running = True
         while running:
             for event in pygame.event.get():
