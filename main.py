@@ -26,7 +26,7 @@ def choose_font(size: int) -> pygame.font.Font:
 
 
 def format_temp(value):
-    return "--°F" if value is None else f"{value:.0f}°F"
+    return "--°F" if value is None else f"{value:.1f}°F"
 
 
 class MatrixOS:
@@ -39,10 +39,9 @@ class MatrixOS:
         self.clock = pygame.time.Clock()
 
         self.rain_font = choose_font(15)
-        self.clock_font = choose_font(34)
-        self.label_font = choose_font(16)
-        self.value_font = choose_font(31)
-        self.small_font = choose_font(12)
+        self.clock_font = choose_font(48)
+        self.label_font = choose_font(19)
+        self.value_font = choose_font(42)
 
         self.engine = MatrixEngine(WIDTH, HEIGHT, self.rain_font)
         self.data = LiveData()
@@ -50,7 +49,7 @@ class MatrixOS:
         self.next_glitch = time.monotonic() + random.uniform(3.0, 7.0)
         self.glitch_until = 0.0
 
-    def glow_text(self, text, font, center, color=GREEN, glow=1):
+    def glow_text(self, text, font, center, color=GREEN, glow=2):
         base = font.render(text, True, color)
         rect = base.get_rect(center=center)
         for radius in range(glow, 0, -1):
@@ -67,18 +66,18 @@ class MatrixOS:
             self.glitch_until = time.monotonic() + random.uniform(0.05, 0.14)
             self.next_glitch = time.monotonic() + random.uniform(3.0, 7.0)
         x = WIDTH // 2 + (random.randint(-4, 4) if time.monotonic() < self.glitch_until else 0)
-        self.glow_text(text, self.clock_font, (x, 38), HEAD_GREEN, 1)
+        self.glow_text(text, self.clock_font, (x, 42), HEAD_GREEN, 2)
 
     def draw_temperatures(self):
         items = [
-            ("FRONT ROOM", self.data.front_room_f, 120, 115),
-            ("BEDROOM", self.data.bedroom_f, 360, 115),
-            ("INSIDE", self.data.inside_f, 120, 235),
-            ("OUTSIDE", self.data.outside_f, 360, 235),
+            ("FRONT ROOM", self.data.front_room_f, 120, 137),
+            ("BEDROOM", self.data.bedroom_f, 360, 137),
+            ("INSIDE", self.data.inside_f, 120, 257),
+            ("OUTSIDE", self.data.outside_f, 360, 257),
         ]
         for label, value, x, y in items:
-            self.glow_text(label, self.label_font, (x, y - 24), GREEN, 1)
-            self.glow_text(format_temp(value), self.value_font, (x, y + 12), HEAD_GREEN, 1)
+            self.glow_text(label, self.label_font, (x, y - 28), GREEN, 1)
+            self.glow_text(format_temp(value), self.value_font, (x, y + 15), HEAD_GREEN, 2)
 
     def draw(self):
         self.screen.fill((0, 0, 0))
