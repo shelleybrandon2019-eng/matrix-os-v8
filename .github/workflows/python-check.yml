@@ -1,0 +1,18 @@
+name: Matrix OS checks
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check Python syntax
+        run: python -m py_compile main.py matrix_engine.py live_data.py
+      - name: Check shell syntax
+        run: bash -n start_matrix.sh scripts/diagnostics.sh scripts/service_install.sh
