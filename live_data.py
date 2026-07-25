@@ -70,6 +70,32 @@ def _find_value(node: Any, wanted: tuple[str, ...]) -> Optional[float]:
     return None
 
 
+def _device_list(payload: Any) -> list[dict[str, Any]]:
+    """Normalize the different Ecowitt device/list response shapes."""
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+
+    if not isinstance(payload, dict):
+        return []
+
+    data = payload.get("data")
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+
+    if isinstance(data, dict):
+        for key in ("list", "devices", "device_list"):
+            items = data.get(key)
+            if isinstance(items, list):
+                return [item for item in items if isinstance(item, dict)]
+
+    for key in ("list", "devices", "device_list"):
+        items = payload.get(key)
+        if isinstance(items, list):
+            return [item for item in items if isinstance(item, dict)]
+
+    return []
+
+
 @dataclass
 class LiveData:
     front_room_f: Optional[float] = None
@@ -116,14 +142,20 @@ class LiveData:
             )
             response.raise_for_status()
             payload = response.json()
-            devices = payload.get("data", {}).get("list", [])
-            if not devices and isinstance(payload.get("data"), list):
-                devices = payload["data"]
+            devices = _device_list(payload)
+
             for device in devices:
-                mac = device.get("mac") or device.get("device_mac")
+                mac = (
+                    device.get("mac")
+                    or device.get("device_mac")
+                    or device.get("mac_address")
+                )
                 if mac:
                     self.ecowitt_mac = str(mac)
+                    self.error = ""
                     return self.ecowitt_mac
+
+            self.error = "Ecowitt account returned no devices"
         except Exception as exc:
             self.error = f"Ecowitt device lookup failed: {exc}"
         return None
@@ -150,7 +182,7 @@ class LiveData:
             )
             response.raise_for_status()
             payload = response.json()
-            data = payload.get("data", payload)
+            data = payload.get("data", payload) if isinstance(payload, dict) else payload
 
             inside = _find_value(
                 data,
@@ -171,7 +203,6 @@ class LiveData:
                 ),
             )
 
-            # Ecowitt commonly nests values under indoor/outdoor temperature groups.
             if inside is None and isinstance(data, dict):
                 inside = _find_value(data.get("indoor", {}), ("temperature", "temp", "value"))
             if outside is None and isinstance(data, dict):
