@@ -25,6 +25,36 @@ def choose_font(size: int) -> pygame.font.Font:
     return pygame.font.Font(None, size)
 
 
+def choose_rain_font(size: int) -> pygame.font.Font:
+    """Choose a font that actually contains the Japanese Matrix rain glyphs."""
+    preferred = [
+        "Noto Sans CJK JP",
+        "Noto Sans JP",
+        "Noto Sans Mono CJK JP",
+        "IPAGothic",
+        "TakaoGothic",
+        "VL Gothic",
+    ]
+    for name in preferred:
+        path = pygame.font.match_font(name)
+        if path:
+            return pygame.font.Font(path, size)
+
+    common_paths = [
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKjp-Regular.otf",
+        "/usr/share/fonts/truetype/fonts-japanese-gothic.ttf",
+        "/usr/share/fonts/truetype/takao-gothic/TakaoGothic.ttf",
+    ]
+    for path in common_paths:
+        if os.path.exists(path):
+            return pygame.font.Font(path, size)
+
+    # Never fall back to a font that turns Japanese symbols into square boxes.
+    # MatrixEngine detects this fallback and uses its box-free ASCII glyph set.
+    return choose_font(size)
+
+
 def format_temp(value):
     return "--°F" if value is None else f"{value:.1f}°F"
 
@@ -38,7 +68,7 @@ class MatrixOS:
         pygame.mouse.set_visible(False)
         self.clock = pygame.time.Clock()
 
-        self.rain_font = choose_font(15)
+        self.rain_font = choose_rain_font(15)
         self.clock_font = choose_font(48)
         self.label_font = choose_font(19)
         self.value_font = choose_font(42)
