@@ -1,28 +1,32 @@
-# Matrix OS V8
+# Matrix OS V9
 
-A cinematic Raspberry Pi Matrix display for a 480×320 screen, with an ESP32-S3 screen used as a Pi-controlled sidecar.
+A cinematic Raspberry Pi Matrix display built for a 480×320 screen.
 
-## Architecture
+## V9 display rotation
 
-The Raspberry Pi is the brain:
+The clock stays large and centered at the top while the lower display rotates through three pages:
+
+1. **ECOWITT** — Inside and Outside temperatures
+2. **GOVEE** — Front Room and Bedroom temperatures
+3. **XRP LIVE** — Live XRP/USD price
+
+Only two temperatures are shown at once. Each page displays for 8 seconds by default.
+
+## Controls
+
+- `Space` or `Right Arrow`: next page
+- `Left Arrow`: previous page
+- `Esc`: exit
+
+## Version history
+
+The last complete Matrix OS V8 build is preserved in the repository branch:
 
 ```text
-GitHub -> Raspberry Pi -> USB serial -> ESP32-S3 -> sidecar screen
+archive/matrix-os-v8
 ```
 
-The ESP32 does not fetch weather, crypto, or miner data on its own. The Pi collects and decides what to show, then sends one compact JSON event at a time to the ESP32 over USB.
-
-## Main Matrix display
-
-- Matrix rain is the main visual
-- Time stays centered at the top
-- One large reveal appears at a time
-- Outside temperature, Front Room, Bedroom, Wind, and XRP rotate
-- Temperature reveals use heat/cold accent colors
-- Wind bends the Matrix sideways
-- Reveals tear open and collapse back into code
-- Press `Space` to force the next reveal
-- Press `Esc` to exit
+The `main` branch is now Matrix OS V9.
 
 ## Install on the Pi
 
@@ -34,67 +38,27 @@ chmod +x install.sh start_matrix.sh
 ./start_matrix.sh
 ```
 
-## ESP32 sidecar
+## Live data configuration
 
-Current detected hardware:
-
-- ESP32-S3
-- 16 MB flash
-- 8 MB PSRAM
-- USB Serial/JTAG
-
-The Pi bridge is at `pi/sidecar_bridge.py`. The ESP32 PlatformIO project is in `esp32/`.
-
-Install the Pi serial dependency:
-
-```bash
-python3 -m pip install pyserial
-```
-
-After the ESP32 firmware is flashed and connected to the Pi, test the link:
-
-```bash
-python3 pi/sidecar_bridge.py --port /dev/ttyACM0 --demo
-```
-
-Send one event manually:
-
-```bash
-python3 pi/sidecar_bridge.py \
-  --port /dev/ttyACM0 \
-  --kind weather \
-  --title OUTSIDE \
-  --value '90°F' \
-  --accent red
-```
-
-Example USB message sent by the Pi:
-
-```json
-{"kind":"weather","title":"OUTSIDE","value":"90°F","accent":"red","duration_ms":8000}
-```
-
-The ESP32 receiver is working as a serial protocol foundation. The exact screen driver and pin mapping will be added after the display board model is confirmed.
-
-## Optional live data
-
-Copy the example config:
+Copy the example configuration:
 
 ```bash
 cp config.example.env config.env
 nano config.env
 ```
 
-Then add your Weather Underground API key and optional room sensor URLs.
+Add the Ecowitt application key, API key, and device MAC. The two Govee sensors are read over Bluetooth using their configured MAC addresses.
 
-## Update later
+XRP uses Coinbase first, then CoinGecko and Kraken as automatic fallbacks.
+
+## Page timing
+
+Change the page rotation time in `config.env`:
 
 ```bash
-cd ~/matrix-os-v8
-git pull
-./start_matrix.sh
+MATRIX_PAGE_SECONDS=8
 ```
 
-## Current status
+## Automatic updates
 
-Matrix OS V8 runs from the Pi. The new ESP32-S3 sidecar code keeps the Pi in control and uses USB as the first reliable connection method. XRP uses a public live-price endpoint. Weather and room temperatures fall back to demo values until their live feeds are configured.
+`start_matrix.sh` checks GitHub for changes. When the Pi sees a newer commit on `main`, it pulls the update and restarts Matrix OS.
