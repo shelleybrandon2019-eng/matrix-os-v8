@@ -9,6 +9,7 @@ from typing import Optional, Tuple
 
 import pygame
 
+from drop_transition import DropCollectMelt
 from live_data import LiveData
 from matrix_engine import GREEN, HEAD_GREEN, MatrixEngine
 
@@ -26,6 +27,9 @@ PAGE_SECONDS = float(os.getenv("MATRIX_PAGE_SECONDS", "8"))
 XRP_REFRESH_SECONDS = 30
 CLOCK_Y = 43
 PAGE_TITLE_Y = 105
+COLLECT_SECONDS = 1.45
+MELT_SECONDS = 1.45
+STATIC_SECONDS = max(2.5, PAGE_SECONDS - COLLECT_SECONDS - MELT_SECONDS)
 
 XRP_SOURCES = (
     ("COINBASE", "https://api.coinbase.com/v2/prices/XRP-USD/spot"),
@@ -69,7 +73,6 @@ def choose_rain_font(size: int) -> pygame.font.Font:
             return pygame.font.Font(path, size)
 
     # Never fall back to a font that turns Japanese symbols into square boxes.
-    # MatrixEngine detects this fallback and uses its box-free ASCII glyph set.
     return choose_font(size)
 
 
@@ -90,7 +93,7 @@ def fetch_xrp() -> Tuple[Optional[float], str]:
             response = requests.get(
                 url,
                 timeout=6,
-                headers={"User-Agent": "MatrixOS-V9/1.0"},
+                headers={"User-Agent": "MatrixOS-V9.1/1.0"},
             )
             response.raise_for_status()
             payload = response.json()
@@ -146,7 +149,7 @@ class MatrixOS:
         pygame.init()
         flags = pygame.FULLSCREEN if FULLSCREEN else 0
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT), flags)
-        pygame.display.set_caption("Matrix OS V9")
+        pygame.display.set_caption("Matrix OS V9.1 - Drop Collect Melt Test")
         pygame.mouse.set_visible(False)
         self.clock = pygame.time.Clock()
 
@@ -165,85 +168,200 @@ class MatrixOS:
         self.xrp.refresh(force=True)
 
         self.page_index = 0
-        self.page_started = time.monotonic()
+        self.pending_step = 1
+        self.phase = "collect"
+        self.phase_started = time.monotonic()
+        self.effect: Optional[DropCollectMelt] = None
+
         self.next_glitch = time.monotonic() + random.uniform(3.0, 7.0)
         self.glitch_until = 0.0
+        self.begin_collect()
 
-    def glow_text(self, text, font, center, color=GREEN, glow=2):
+    def glow_text_to(
+        self,
+        surface: pygame.Surface,
+        text,
+        font,
+        center,
+        color=GREEN,
+        glow=2,
+    ):
         base = font.render(text, True, color)
         rect = base.get_rect(center=center)
         for radius in range(glow, 0, -1):
             dim = tuple(max(0, c // (radius + 2)) for c in color)
             ghost = font.render(text, True, dim)
             for dx, dy in ((radius, 0), (-radius, 0), (0, radius), (0, -radius)):
-                self.screen.blit(ghost, rect.move(dx, dy))
-        self.screen.blit(base, rect)
+                surface.blit(ghost, rect.move(dx, dy))
+        surface.blit(base, rect)
 
     def draw_clock(self):
-        # No seconds: this lets the clock stay much larger and cleaner.
         text = datetime.now().strftime("%I:%M %p").lstrip("0")
         if time.monotonic() > self.next_glitch:
             self.glitch_until = time.monotonic() + random.uniform(0.05, 0.14)
             self.next_glitch = time.monotonic() + random.uniform(3.0, 7.0)
-        x = WIDTH // 2 + (random.randint(-4, 4) if time.monotonic() < self.glitch_until else 0)
-        self.glow_text(text, self.clock_font, (x, CLOCK_Y), HEAD_GREEN, 2)
+        x = WIDTH // 2 + (
+            random.randint(-4, 4) if time.monotonic() < self.glitch_until else 0
+        )
+        self.glow_text_to(
+            self.screen,
+            text,
+            self.clock_font,
+            (x, CLOCK_Y),
+            HEAD_GREEN,
+            2,
+        )
 
-    def update_page(self):
-        if time.monotonic() - self.page_started >= PAGE_SECONDS:
-            self.page_index = (self.page_index + 1) % len(self.PAGES)
-            self.page_started = time.monotonic()
-            self.glitch_until = time.monotonic() + 0.20
+    def render_page(self, surface: pygame.Surface, page_index: int, glow: bool) -> None:
+        page = self.PAGES[page_index]
+        page_glow = 1 if glow else 0
+        value_glow = 2 if glow else 0
 
-    def draw_page_title(self, title):
-        self.glow_text(title, self.page_font, (WIDTH // 2, PAGE_TITLE_Y), GREEN, 1)
-
-    def draw_temp_pair(self, title, left_label, left_value, right_label, right_value):
-        self.draw_page_title(title)
-        items = [
-            (left_label, left_value, 125),
-            (right_label, right_value, 355),
-        ]
-        for label, value, x in items:
-            self.glow_text(label, self.label_font, (x, 166), GREEN, 1)
-            self.glow_text(format_temp(value), self.value_font, (x, 224), HEAD_GREEN, 2)
-
-    def draw_xrp(self):
-        self.draw_page_title("XRP LIVE")
-        self.glow_text("XRP / USD", self.label_font, (WIDTH // 2, 160), GREEN, 1)
-        self.glow_text(format_xrp(self.xrp.price), self.xrp_value_font, (WIDTH // 2, 224), HEAD_GREEN, 3)
-        self.glow_text(self.xrp.source, self.source_font, (WIDTH // 2, 282), GREEN, 1)
-
-    def draw_content(self):
-        page = self.PAGES[self.page_index]
         if page == "ECOWITT":
-            self.draw_temp_pair(
-                "ECOWITT",
-                "INSIDE",
-                self.data.inside_f,
-                "OUTSIDE",
-                self.data.outside_f,
+            self.glow_text_to(
+                surface, "ECOWITT", self.page_font, (WIDTH // 2, PAGE_TITLE_Y), GREEN, page_glow
             )
+            items = [
+                ("INSIDE", self.data.inside_f, 125),
+                ("OUTSIDE", self.data.outside_f, 355),
+            ]
+            for label, value, x in items:
+                self.glow_text_to(
+                    surface, label, self.label_font, (x, 166), GREEN, page_glow
+                )
+                self.glow_text_to(
+                    surface,
+                    format_temp(value),
+                    self.value_font,
+                    (x, 224),
+                    HEAD_GREEN,
+                    value_glow,
+                )
+
         elif page == "GOVEE":
-            self.draw_temp_pair(
-                "GOVEE",
-                "FRONT ROOM",
-                self.data.front_room_f,
-                "BEDROOM",
-                self.data.bedroom_f,
+            self.glow_text_to(
+                surface, "GOVEE", self.page_font, (WIDTH // 2, PAGE_TITLE_Y), GREEN, page_glow
             )
+            items = [
+                ("FRONT ROOM", self.data.front_room_f, 125),
+                ("BEDROOM", self.data.bedroom_f, 355),
+            ]
+            for label, value, x in items:
+                self.glow_text_to(
+                    surface, label, self.label_font, (x, 166), GREEN, page_glow
+                )
+                self.glow_text_to(
+                    surface,
+                    format_temp(value),
+                    self.value_font,
+                    (x, 224),
+                    HEAD_GREEN,
+                    value_glow,
+                )
+
         else:
-            self.draw_xrp()
+            self.glow_text_to(
+                surface, "XRP LIVE", self.page_font, (WIDTH // 2, PAGE_TITLE_Y), GREEN, page_glow
+            )
+            self.glow_text_to(
+                surface, "XRP / USD", self.label_font, (WIDTH // 2, 160), GREEN, page_glow
+            )
+            self.glow_text_to(
+                surface,
+                format_xrp(self.xrp.price),
+                self.xrp_value_font,
+                (WIDTH // 2, 224),
+                HEAD_GREEN,
+                value_glow,
+            )
+            self.glow_text_to(
+                surface,
+                self.xrp.source,
+                self.source_font,
+                (WIDTH // 2, 282),
+                GREEN,
+                page_glow,
+            )
+
+    def rain_source_points(self):
+        points = []
+        for stream in self.engine.streams:
+            for index in range(min(stream.length, 5)):
+                y = stream.y - index * self.engine.char_h
+                if 78 <= y <= HEIGHT:
+                    points.append((stream.x, y))
+        return points
+
+    def build_effect(self, page_index: int) -> DropCollectMelt:
+        target = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        target.fill((0, 0, 0, 0))
+        self.render_page(target, page_index, glow=False)
+        effect = DropCollectMelt(
+            WIDTH,
+            HEIGHT,
+            self.rain_font,
+            self.engine.glyph_set,
+            target,
+            self.rain_source_points(),
+        )
+        effect.collect_seconds = COLLECT_SECONDS
+        effect.melt_seconds = MELT_SECONDS
+        return effect
+
+    def begin_collect(self) -> None:
+        self.effect = self.build_effect(self.page_index)
+        self.effect.start_collect()
+        self.phase = "collect"
+        self.phase_started = time.monotonic()
+        self.glitch_until = time.monotonic() + 0.16
+
+    def begin_melt(self, step: int = 1) -> None:
+        self.pending_step = step
+        self.effect = self.build_effect(self.page_index)
+        self.effect.start_melt()
+        self.phase = "melt"
+        self.phase_started = time.monotonic()
+        self.glitch_until = time.monotonic() + 0.16
+
+    def update_phase(self, dt: float) -> None:
+        elapsed = time.monotonic() - self.phase_started
+
+        if self.phase == "collect":
+            self.effect.update(dt)
+            if self.effect.finished():
+                self.phase = "hold"
+                self.phase_started = time.monotonic()
+
+        elif self.phase == "hold":
+            if elapsed >= STATIC_SECONDS:
+                self.begin_melt(1)
+
+        elif self.phase == "melt":
+            self.effect.update(dt)
+            if self.effect.finished():
+                self.page_index = (self.page_index + self.pending_step) % len(self.PAGES)
+                self.begin_collect()
 
     def draw(self):
         self.screen.fill((0, 0, 0))
+
+        # The Matrix rain never pauses or fades; the page effect is only an overlay.
         self.engine.update()
         self.engine.draw(self.screen)
+
+        if self.phase == "hold":
+            self.render_page(self.screen, self.page_index, glow=True)
+        elif self.effect is not None:
+            self.effect.draw(self.screen)
+
+        # Time always stays clean and on top of every transition.
         self.draw_clock()
-        self.draw_content()
         pygame.display.flip()
 
     def run(self):
         running = True
+        last = time.monotonic()
+
         while running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -252,15 +370,17 @@ class MatrixOS:
                     if event.key == pygame.K_ESCAPE:
                         running = False
                     elif event.key in (pygame.K_SPACE, pygame.K_RIGHT):
-                        self.page_index = (self.page_index + 1) % len(self.PAGES)
-                        self.page_started = time.monotonic()
+                        self.begin_melt(1)
                     elif event.key == pygame.K_LEFT:
-                        self.page_index = (self.page_index - 1) % len(self.PAGES)
-                        self.page_started = time.monotonic()
+                        self.begin_melt(-1)
+
+            now = time.monotonic()
+            dt = min(0.05, now - last)
+            last = now
 
             self.data.refresh()
             self.xrp.refresh()
-            self.update_page()
+            self.update_phase(dt)
             self.draw()
             self.clock.tick(FPS)
 
@@ -270,7 +390,7 @@ def main() -> int:
         MatrixOS().run()
         return 0
     except Exception as exc:
-        print(f"Matrix OS V9 failed: {exc}", file=sys.stderr)
+        print(f"Matrix OS V9.1 failed: {exc}", file=sys.stderr)
         return 1
     finally:
         pygame.quit()
