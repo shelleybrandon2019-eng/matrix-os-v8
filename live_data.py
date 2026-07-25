@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
+import asyncio
 import os
+import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 try:
@@ -9,13 +11,22 @@ try:
 except ImportError:
     requests = None
 
+try:
+    from bleak import BleakScanner
+except ImportError:
+    BleakScanner = None
+
 REFRESH_SECONDS = 30
+BLE_SCAN_SECONDS = 8
 ECOWITT_BASE = "https://api.ecowitt.net/api/v3"
 ECOWITT_APPLICATION_KEY = os.getenv("ECOWITT_APPLICATION_KEY", "")
 ECOWITT_API_KEY = os.getenv("ECOWITT_API_KEY", "")
 ECOWITT_MAC = os.getenv("ECOWITT_MAC", "")
 FRONT_ROOM_URL = os.getenv("FRONT_ROOM_URL", "")
 BEDROOM_URL = os.getenv("BEDROOM_URL", "")
+FRONT_ROOM_MAC = os.getenv("FRONT_ROOM_MAC", "A4:C1:38:21:0C:F2").upper()
+BEDROOM_MAC = os.getenv("BEDROOM_MAC", "A4:C1:38:17:EC:09").upper()
+GOVEE_COMPANY_ID = 60552
 
 
 def read_temperature(url: str) -> Optional[float]:
@@ -96,6 +107,22 @@ def _device_list(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _decode_govee_h5075(payload: bytes) -> Optional[float]:
+    """Decode a Govee H5075 advertisement and return Fahrenheit."""
+    if len(payload) < 4:
+        return None
+
+    packed = int.from_bytes(payload[1:4], byteorder="big", signed=False)
+    negative = bool(packed & 0x800000)
+    packed &= 0x7FFFFF
+
+    temperature_c = (packed // 1000) / 10.0
+    if negative:
+        temperature_c = -temperature_c
+
+    return round((temperature_c * 9.0 / 5.0) + 32.0, 1)
+
+
 @dataclass
 class LiveData:
     front_room_f: Optional[float] = None
@@ -105,6 +132,12 @@ class LiveData:
     last_refresh: float = 0.0
     ecowitt_mac: str = ECOWITT_MAC
     error: str = ""
+    _ble_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+    _ble_values: dict[str, float] = field(default_factory=dict, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if BleakScanner is not None:
+            threading.Thread(target=self._ble_worker, daemon=True).start()
 
     def refresh(self, force: bool = False) -> None:
         now = time.monotonic()
@@ -112,8 +145,15 @@ class LiveData:
             return
         self.last_refresh = now
 
-        front = read_temperature(FRONT_ROOM_URL)
-        bedroom = read_temperature(BEDROOM_URL)
+        with self._ble_lock:
+            front = self._ble_values.get(FRONT_ROOM_MAC)
+            bedroom = self._ble_values.get(BEDROOM_MAC)
+
+        if front is None:
+            front = read_temperature(FRONT_ROOM_URL)
+        if bedroom is None:
+            bedroom = read_temperature(BEDROOM_URL)
+
         inside, outside = self.read_ecowitt()
 
         if front is not None:
@@ -124,6 +164,47 @@ class LiveData:
             self.inside_f = inside
         if outside is not None:
             self.outside_f = outside
+
+    def _ble_worker(self) -> None:
+        while True:
+            try:
+                asyncio.run(self._scan_govee())
+            except Exception as exc:
+                if not self.error:
+                    self.error = f"Bluetooth scan failed: {exc}"
+            time.sleep(max(1, REFRESH_SECONDS - BLE_SCAN_SECONDS))
+
+    async def _scan_govee(self) -> None:
+        if BleakScanner is None:
+            return
+
+        targets = {FRONT_ROOM_MAC, BEDROOM_MAC}
+        found: dict[str, float] = {}
+
+        def callback(device: Any, advertisement: Any) -> None:
+            address = str(getattr(device, "address", "")).upper()
+            if address not in targets:
+                return
+
+            manufacturer_data = getattr(advertisement, "manufacturer_data", {})
+            payload = manufacturer_data.get(GOVEE_COMPANY_ID)
+            if not isinstance(payload, (bytes, bytearray)):
+                return
+
+            temperature_f = _decode_govee_h5075(bytes(payload))
+            if temperature_f is not None:
+                found[address] = temperature_f
+
+        scanner = BleakScanner(callback)
+        await scanner.start()
+        try:
+            await asyncio.sleep(BLE_SCAN_SECONDS)
+        finally:
+            await scanner.stop()
+
+        if found:
+            with self._ble_lock:
+                self._ble_values.update(found)
 
     def _params(self) -> dict[str, str]:
         return {
@@ -173,7 +254,7 @@ class LiveData:
             return None, None
 
         params = self._params()
-        params.update({"mac": mac, "call_back": "all", "temp_unitid": "1"})
+        params.update({"mac": mac, "call_back": "all", "temp_unitid": "2"})
         try:
             response = requests.get(
                 f"{ECOWITT_BASE}/device/real_time",
