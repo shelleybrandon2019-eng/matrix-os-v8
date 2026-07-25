@@ -6,4 +6,4 @@ sudo apt install -y python3-pygame python3-requests git
 
 chmod +x start_matrix.sh
 
-echo "Matrix OS V8 installed. Run ./start_matrix.sh"
+echo "Matrix OS V9 installed. Run ./start_matrix.sh"
