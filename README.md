@@ -1,32 +1,41 @@
-# Matrix OS V9
+# Matrix OS V9.1 — Drop Collect/Melt Test
 
 A cinematic Raspberry Pi Matrix display built for a 480×320 screen.
 
-## V9 display rotation
+## V9.1 transition test
 
-The clock stays large and centered at the top while the lower display rotates through three pages:
+The Matrix rain never pauses. For every page change:
+
+1. Falling Matrix glyphs pull together and form the next page.
+2. The page locks into clean readable text.
+3. The text breaks back into glyphs and melts downward off the screen.
+
+The large clock stays fixed and readable above the effect.
+
+## Display rotation
 
 1. **ECOWITT** — Inside and Outside temperatures
 2. **GOVEE** — Front Room and Bedroom temperatures
 3. **XRP LIVE** — Live XRP/USD price
 
-Only two temperatures are shown at once. Each page displays for 8 seconds by default.
+Only two temperatures are shown at once. The complete collect, hold, and melt cycle lasts about 8 seconds by default.
 
 ## Controls
 
-- `Space` or `Right Arrow`: next page
-- `Left Arrow`: previous page
+- `Space` or `Right Arrow`: melt the current page and move forward
+- `Left Arrow`: melt the current page and move backward
 - `Esc`: exit
 
 ## Version history
 
-The last complete Matrix OS V8 build is preserved in the repository branch:
+The previous versions are preserved as repository branches:
 
 ```text
 archive/matrix-os-v8
+archive/matrix-os-v9-static
 ```
 
-The `main` branch is now Matrix OS V9.
+The `main` branch is the V9.1 animation test.
 
 ## Install on the Pi
 
@@ -53,7 +62,7 @@ XRP uses Coinbase first, then CoinGecko and Kraken as automatic fallbacks.
 
 ## Page timing
 
-Change the page rotation time in `config.env`:
+Change the complete page-cycle time in `config.env`:
 
 ```bash
 MATRIX_PAGE_SECONDS=8
