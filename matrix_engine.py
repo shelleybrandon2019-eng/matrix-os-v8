@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cinematic multi-depth Matrix rain engine optimized for a Raspberry Pi."""
+"""Sharp multi-depth Matrix rain with long clean trails for Raspberry Pi."""
 
 import random
 from dataclasses import dataclass
@@ -14,7 +14,7 @@ ASCII_GLYPHS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ@#$%&*+=<>?/\\|:;[]{}()"
 GREEN = (0, 255, 70)
 DIM_GREEN = (0, 55, 22)
 MID_GREEN = (0, 165, 48)
-HEAD_GREEN = (215, 255, 225)
+HEAD_GREEN = (225, 255, 232)
 
 
 def mix(a: Tuple[int, int, int], b: Tuple[int, int, int], t: float) -> Tuple[int, int, int]:
@@ -62,21 +62,21 @@ class Stream:
             self.drift = random.uniform(-2.5, 2.5)
         else:
             self.speed = random.uniform(8.5, 15.5)
-            self.length = random.randint(18, 34)
-            self.brightness = random.uniform(0.82, 1.0)
+            self.length = random.randint(20, 38)
+            self.brightness = random.uniform(0.84, 1.0)
             self.mutate_rate = random.uniform(0.07, 0.14)
             self.drift = random.uniform(-3.5, 3.5)
 
-        self.hero = self.depth == 2 and random.random() < 0.11
+        self.hero = self.depth == 2 and random.random() < 0.13
         if self.hero:
-            self.speed *= random.uniform(1.08, 1.28)
-            self.length += random.randint(5, 10)
+            self.speed *= random.uniform(1.08, 1.24)
+            self.length += random.randint(7, 13)
 
         self.glyphs = [random.choice(glyph_set) for _ in range(self.length)]
 
 
 class MatrixEngine:
-    """Three-layer rain with cached glyphs, bloom heads, and persistent trails."""
+    """Three-layer rain with cached glyphs, sharp heads, and persistent trails."""
 
     def __init__(self, width: int, height: int, font: pygame.font.Font) -> None:
         self.width = width
@@ -130,11 +130,11 @@ class MatrixEngine:
         if image is None:
             raw = self.font.render(glyph, True, HEAD_GREEN)
             padded = pygame.Surface(
-                (raw.get_width() + 14, raw.get_height() + 14), pygame.SRCALPHA
+                (raw.get_width() + 10, raw.get_height() + 10), pygame.SRCALPHA
             )
             center = padded.get_rect().center
-            pygame.draw.circle(padded, (35, 255, 95, 50), center, max(8, raw.get_height() // 2))
-            pygame.draw.circle(padded, (90, 255, 140, 28), center, max(12, raw.get_height()))
+            pygame.draw.circle(padded, (35, 255, 95, 32), center, max(6, raw.get_height() // 2))
+            pygame.draw.circle(padded, (90, 255, 140, 15), center, max(9, raw.get_height() - 2))
             padded.blit(raw, raw.get_rect(center=center))
             image = padded
             self._head_cache[glyph] = image
@@ -146,14 +146,14 @@ class MatrixEngine:
             head = self._head_image(glyph)
             image = pygame.transform.smoothscale(
                 head,
-                (head.get_width() * 2, head.get_height() * 2),
+                (max(1, int(head.get_width() * 1.55)), max(1, int(head.get_height() * 1.55))),
             )
-            image.set_alpha(150)
+            image.set_alpha(132)
             self._hero_cache[glyph] = image
         return image
 
-    def trigger_cinematic_flash(self, strength: int = 95) -> None:
-        self.fx.trigger_flash(strength=strength, decay_seconds=0.32)
+    def trigger_cinematic_flash(self, strength: int = 76) -> None:
+        self.fx.trigger_flash(strength=strength, decay_seconds=0.26)
 
     def update(self, intensity: float = 1.0) -> None:
         self.fx.update(1.0 / 60.0)
@@ -168,8 +168,9 @@ class MatrixEngine:
                 stream.reset(self.height, self.glyph_set)
 
     def draw(self, surface: pygame.Surface) -> None:
+        # Very slow fade keeps long trails while the crisp live glyph stays on top.
         self.trail_surface.fill(
-            (235, 235, 235, 218), special_flags=pygame.BLEND_RGBA_MULT
+            (248, 248, 248, 242), special_flags=pygame.BLEND_RGBA_MULT
         )
 
         for stream in self.streams:
@@ -179,11 +180,9 @@ class MatrixEngine:
                     continue
 
                 falloff = max(0.06, 1.0 - index / max(1, stream.length - 1))
-                depth_weight = (0.50, 0.78, 1.0)[stream.depth]
+                depth_weight = (0.46, 0.78, 1.0)[stream.depth]
                 value = falloff * stream.brightness * depth_weight
                 level = int(max(0, min(5, round(value * 5))))
-                # Tiny sinusoidal-looking offsets are approximated from vertical position,
-                # avoiding per-stream drift that could wander off-screen over time.
                 x = int(stream.x + stream.drift * ((y % 37) / 37.0 - 0.5))
 
                 if index == 0:
@@ -196,6 +195,19 @@ class MatrixEngine:
 
                     if stream.depth == 2:
                         self.trail_surface.blit(head, head_rect, special_flags=pygame.BLEND_RGBA_ADD)
+
+                        # Add two clean echoes behind foreground heads for longer streaks.
+                        self.trail_surface.blit(
+                            self._glyph_image(glyph, 4),
+                            (x, y - self.char_h),
+                            special_flags=pygame.BLEND_RGBA_ADD,
+                        )
+                        self.trail_surface.blit(
+                            self._glyph_image(glyph, 3),
+                            (x, y - self.char_h * 2),
+                            special_flags=pygame.BLEND_RGBA_ADD,
+                        )
+
                         if stream.hero:
                             hero = self._hero_image(glyph)
                             hero_rect = hero.get_rect(
