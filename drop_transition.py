@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Matrix glyph transition: rain drops collect into text, then melt away."""
+"""High-contrast Matrix transition: drops collect into text, then melt away."""
 
 import math
 import random
@@ -58,7 +58,7 @@ class GlyphParticle:
 
 
 class DropCollectMelt:
-    """Build a page out of Matrix glyphs and drip it off-screen without fading."""
+    """Make the transition impossible to miss while preserving Matrix styling."""
 
     def __init__(
         self,
@@ -68,23 +68,27 @@ class DropCollectMelt:
         glyph_set: str,
         target_surface: pygame.Surface,
         rain_points: Sequence[Point],
-        max_particles: int = 600,
+        max_particles: int = 540,
         sample_step: int = 6,
     ) -> None:
         self.width = width
         self.height = height
         self.font = glyph_font
         self.glyph_set = glyph_set
-        self.collect_seconds = 1.65
-        self.melt_seconds = 1.90
+        self.target_surface = target_surface.copy()
+        self.collect_seconds = 1.45
+        self.melt_seconds = 1.45
         self.elapsed = 0.0
         self.mode = "collect"
         self.particles: List[GlyphParticle] = []
         self._glyph_cache: Dict[Tuple[str, Color], pygame.Surface] = {}
+        self.badge_font = pygame.font.Font(None, 19)
+
+        self.content_dimmer = pygame.Surface((width, height - 76), pygame.SRCALPHA)
+        self.content_dimmer.fill((0, 0, 0, 190))
 
         targets = self._sample_targets(target_surface, sample_step)
         if len(targets) > max_particles:
-            # Keep the shape balanced instead of removing one whole region at random.
             stride = len(targets) / max_particles
             targets = [targets[int(index * stride)] for index in range(max_particles)]
 
@@ -96,9 +100,10 @@ class DropCollectMelt:
             ]
 
         for tx, ty, color in targets:
-            sx, sy = random.choice(source_points)
-            sx += random.uniform(-4.0, 4.0)
-            sy += random.uniform(-16.0, 16.0)
+            sx, source_y = random.choice(source_points)
+            # Force a visible falling motion from above the data area.
+            sy = min(source_y - random.uniform(90.0, 230.0), random.uniform(-120.0, 80.0))
+            sx += random.uniform(-16.0, 16.0)
             particle = GlyphParticle(
                 glyph=random.choice(glyph_set),
                 start_x=sx,
@@ -106,8 +111,8 @@ class DropCollectMelt:
                 target_x=float(tx),
                 target_y=float(ty),
                 color=color,
-                delay=random.uniform(0.0, 0.30),
-                sway=random.uniform(6.0, 20.0),
+                delay=random.uniform(0.0, 0.24),
+                sway=random.uniform(8.0, 24.0),
                 phase=random.uniform(0.0, math.tau),
             )
             particle.reset_to_start()
@@ -136,7 +141,11 @@ class DropCollectMelt:
         key = (glyph, color)
         image = self._glyph_cache.get(key)
         if image is None:
-            image = self.font.render(glyph, True, color)
+            raw = self.font.render(glyph, True, color)
+            image = pygame.transform.smoothscale(
+                raw,
+                (max(1, int(raw.get_width() * 1.28)), max(1, int(raw.get_height() * 1.28))),
+            )
             self._glyph_cache[key] = image
         return image
 
@@ -144,17 +153,16 @@ class DropCollectMelt:
         self.mode = "collect"
         self.elapsed = 0.0
         for particle in self.particles:
-            particle.delay = random.uniform(0.0, 0.30)
+            particle.delay = random.uniform(0.0, 0.24)
             particle.reset_to_start()
 
     def start_melt(self) -> None:
         self.mode = "melt"
         self.elapsed = 0.0
         for particle in self.particles:
-            # Uneven column delays make sections hang and stretch like liquid.
-            column_wave = ((particle.target_x % 54.0) / 54.0) * 0.24
+            column_wave = ((particle.target_x % 56.0) / 56.0) * 0.22
             vertical_weight = (particle.target_y / max(1.0, self.height)) * 0.12
-            particle.delay = column_wave + vertical_weight + random.uniform(0.0, 0.12)
+            particle.delay = column_wave + vertical_weight + random.uniform(0.0, 0.10)
             particle.phase = random.uniform(0.0, math.tau)
             particle.reset_to_target()
 
@@ -167,12 +175,11 @@ class DropCollectMelt:
 
     def _update_collect(self) -> None:
         for particle in self.particles:
-            available = max(0.25, self.collect_seconds - particle.delay)
+            available = max(0.22, self.collect_seconds - particle.delay)
             progress = clamp((self.elapsed - particle.delay) / available)
             eased = smoothstep(progress)
             particle.progress = progress
 
-            # Strong movement early, then a tight magnetic snap into the text shape.
             remaining = 1.0 - eased
             arc = math.sin(progress * math.pi) * particle.sway * remaining
             particle.x = (
@@ -183,11 +190,11 @@ class DropCollectMelt:
             particle.y = (
                 particle.start_y
                 + (particle.target_y - particle.start_y) * eased
-                - math.sin(progress * math.pi) * 16.0 * remaining
+                - math.sin(progress * math.pi) * 18.0 * remaining
             )
 
-            if progress > 0.86:
-                snap = smoothstep((progress - 0.86) / 0.14)
+            if progress > 0.78:
+                snap = smoothstep((progress - 0.78) / 0.22)
                 particle.x += (particle.target_x - particle.x) * snap
                 particle.y += (particle.target_y - particle.y) * snap
 
@@ -207,28 +214,42 @@ class DropCollectMelt:
                 particle.visible = True
                 continue
 
-            # Slow stretch first, then gravity takes over and pulls the glyph away.
             gravity = progress * progress
             particle.x = (
                 particle.target_x
                 + math.sin(particle.phase + progress * 9.0)
-                * (1.0 + 4.5 * progress)
+                * (1.0 + 5.0 * progress)
             )
             particle.y = (
                 particle.target_y
-                + 12.0 * progress
-                + 255.0 * gravity
-                + (particle.target_y / max(1.0, self.height)) * 55.0 * progress
+                + 16.0 * progress
+                + 310.0 * gravity
+                + (particle.target_y / max(1.0, self.height)) * 58.0 * progress
             )
-            particle.visible = particle.y <= self.height + self.font.get_linesize() * 3
+            particle.visible = particle.y <= self.height + self.font.get_linesize() * 4
 
     def finished(self) -> bool:
         duration = self.collect_seconds if self.mode == "collect" else self.melt_seconds
         return self.elapsed >= duration
 
-    def draw(self, surface: pygame.Surface) -> None:
-        line_height = max(8, self.font.get_linesize() - 4)
+    def _draw_target_echo(self, surface: pygame.Surface) -> None:
+        duration = self.collect_seconds if self.mode == "collect" else self.melt_seconds
+        global_progress = clamp(self.elapsed / max(0.1, duration))
 
+        echo = self.target_surface.copy()
+        if self.mode == "collect":
+            alpha = int(235 * smoothstep((global_progress - 0.55) / 0.45))
+        else:
+            alpha = int(235 * clamp(1.0 - global_progress * 1.8))
+        echo.set_alpha(alpha)
+        surface.blit(echo, (0, 0))
+
+    def draw(self, surface: pygame.Surface) -> None:
+        # Darken only the data area so the motion cannot disappear into the rain.
+        surface.blit(self.content_dimmer, (0, 76))
+        self._draw_target_echo(surface)
+
+        line_height = max(8, self.font.get_linesize() - 3)
         for particle in self.particles:
             if not particle.visible:
                 continue
@@ -236,23 +257,20 @@ class DropCollectMelt:
             x = int(particle.x)
             y = int(particle.y)
 
-            if self.mode == "melt" and particle.progress > 0.10:
-                # Dim copies above the falling glyph create stringy liquid trails.
+            if self.mode == "melt" and particle.progress > 0.08:
                 trail_count = 1
-                if particle.progress > 0.34:
+                if particle.progress > 0.28:
                     trail_count = 2
-                if particle.progress > 0.62:
-                    trail_count = 3
+                if particle.progress > 0.52:
+                    trail_count = 4
 
                 for trail_index in range(trail_count, 0, -1):
-                    trail_color = mix(DIM_GREEN, particle.color, 0.20 + 0.12 * trail_index)
+                    trail_color = mix(DIM_GREEN, particle.color, 0.18 + 0.10 * trail_index)
                     trail_y = y - trail_index * line_height
-                    surface.blit(
-                        self._image(particle.glyph, trail_color),
-                        (x, trail_y),
-                    )
+                    surface.blit(self._image(particle.glyph, trail_color), (x, trail_y))
 
-            surface.blit(
-                self._image(particle.glyph, particle.color),
-                (x, y),
-            )
+            surface.blit(self._image(particle.glyph, particle.color), (x, y))
+
+        # Diagnostic label: if this appears, the Pi definitely loaded V9.2.
+        badge = self.badge_font.render("V9.2 DROP TEST", True, HEAD_GREEN)
+        surface.blit(badge, (self.width - badge.get_width() - 8, self.height - 20))
