@@ -34,19 +34,21 @@ class Stream:
     length: int
     glyphs: List[str]
     mutate_rate: float
+    brightness: float = 1.0
 
     def reset(self, height: int, glyph_set: str) -> None:
-        self.y = random.uniform(-height * 1.4, -20)
+        self.y = random.uniform(-height * 1.6, -20)
         roll = random.random()
-        if roll < 0.12:
-            self.speed = random.uniform(10.0, 16.0)
-        elif roll < 0.38:
-            self.speed = random.uniform(6.0, 10.0)
+        if roll < 0.16:
+            self.speed = random.uniform(10.0, 17.0)
+        elif roll < 0.46:
+            self.speed = random.uniform(6.0, 11.0)
         else:
-            self.speed = random.uniform(3.5, 6.5)
-        self.length = random.randint(10, 26)
+            self.speed = random.uniform(3.2, 7.2)
+        self.length = random.randint(13, 31)
         self.glyphs = [random.choice(glyph_set) for _ in range(self.length)]
-        self.mutate_rate = random.uniform(0.035, 0.11)
+        self.mutate_rate = random.uniform(0.045, 0.14)
+        self.brightness = random.uniform(0.72, 1.0)
 
 
 class MatrixEngine:
@@ -58,11 +60,20 @@ class MatrixEngine:
         self.char_w = max(9, font.size("W")[0])
         self.char_h = max(13, font.get_linesize())
         self.streams: List[Stream] = []
-        for x in range(-self.char_w, width + self.char_w, self.char_w):
-            stream = Stream(x, 0.0, 5.0, 16, [], 0.06)
-            stream.reset(height, self.glyph_set)
-            stream.y = random.uniform(-height, height)
-            self.streams.append(stream)
+
+        # Tighter column spacing plus a staggered second layer creates more rain
+        # without increasing glyph size.
+        spacing = max(6, self.char_w - 3)
+        for layer in range(2):
+            offset = (spacing // 2) if layer else 0
+            for x in range(-spacing + offset, width + spacing, spacing):
+                stream = Stream(x, 0.0, 5.0, 16, [], 0.06)
+                stream.reset(height, self.glyph_set)
+                stream.y = random.uniform(-height, height)
+                if layer:
+                    stream.speed *= random.uniform(0.72, 0.92)
+                    stream.brightness *= 0.78
+                self.streams.append(stream)
 
     def update(self, intensity: float = 1.0) -> None:
         for stream in self.streams:
@@ -78,6 +89,7 @@ class MatrixEngine:
                 y = int(stream.y - i * self.char_h)
                 if y < -self.char_h or y > self.height:
                     continue
-                brightness = max(0.08, 1.0 - i / max(1, stream.length - 1))
-                color = HEAD_GREEN if i == 0 else mix(DIM_GREEN, GREEN, brightness)
+                brightness = max(0.10, 1.0 - i / max(1, stream.length - 1))
+                brightness *= stream.brightness
+                color = HEAD_GREEN if i == 0 and stream.brightness > 0.82 else mix(DIM_GREEN, GREEN, brightness)
                 surface.blit(self.font.render(glyph, True, color), (stream.x, y))
