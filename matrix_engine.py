@@ -53,19 +53,19 @@ class Stream:
             self.length = random.randint(10, 22)
             self.brightness = random.uniform(0.28, 0.48)
             self.mutate_rate = random.uniform(0.025, 0.065)
-            self.drift = random.uniform(-0.025, 0.025)
+            self.drift = random.uniform(-1.5, 1.5)
         elif self.depth == 1:
             self.speed = random.uniform(4.0, 8.5)
             self.length = random.randint(14, 30)
             self.brightness = random.uniform(0.55, 0.82)
             self.mutate_rate = random.uniform(0.045, 0.105)
-            self.drift = random.uniform(-0.045, 0.045)
+            self.drift = random.uniform(-2.5, 2.5)
         else:
             self.speed = random.uniform(8.5, 15.5)
             self.length = random.randint(18, 34)
             self.brightness = random.uniform(0.82, 1.0)
             self.mutate_rate = random.uniform(0.07, 0.14)
-            self.drift = random.uniform(-0.07, 0.07)
+            self.drift = random.uniform(-3.5, 3.5)
 
         self.hero = self.depth == 2 and random.random() < 0.11
         if self.hero:
@@ -160,13 +160,11 @@ class MatrixEngine:
 
         for stream in self.streams:
             stream.y += stream.speed * intensity
-            stream.x += stream.drift * intensity
 
             if random.random() < stream.mutate_rate:
                 stream.glyphs[random.randrange(len(stream.glyphs))] = random.choice(self.glyph_set)
 
             if stream.y - stream.length * self.char_h > self.height:
-                stream.x = float(int(round(stream.x)))
                 stream.reset(self.height, self.glyph_set)
 
     def draw(self, surface: pygame.Surface) -> None:
@@ -184,7 +182,9 @@ class MatrixEngine:
                 depth_weight = (0.50, 0.78, 1.0)[stream.depth]
                 value = falloff * stream.brightness * depth_weight
                 level = int(max(0, min(5, round(value * 5))))
-                x = int(stream.x)
+                # Tiny sinusoidal-looking offsets are approximated from vertical position,
+                # avoiding per-stream drift that could wander off-screen over time.
+                x = int(stream.x + stream.drift * ((y % 37) / 37.0 - 0.5))
 
                 if index == 0:
                     head = self._head_image(glyph)
