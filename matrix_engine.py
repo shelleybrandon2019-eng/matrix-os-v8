@@ -7,6 +7,8 @@ from typing import Dict, List, Tuple
 
 import pygame
 
+from cinematic_fx import CinematicFX
+
 MATRIX_GLYPHS = "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜ012345789Z:・.="
 ASCII_GLYPHS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ@#$%&*+=<>?/\\|:;[]{}()"
 GREEN = (0, 255, 70)
@@ -32,7 +34,7 @@ def font_supports_matrix_glyphs(font: pygame.font.Font) -> bool:
 
 @dataclass
 class Stream:
-    x: int
+    x: float
     y: float
     speed: float
     length: int
@@ -46,19 +48,19 @@ class Stream:
     def reset(self, height: int, glyph_set: str) -> None:
         self.y = random.uniform(-height * 1.8, -20)
 
-        if self.depth == 0:  # distant rain
+        if self.depth == 0:
             self.speed = random.uniform(2.0, 4.2)
             self.length = random.randint(10, 22)
             self.brightness = random.uniform(0.28, 0.48)
             self.mutate_rate = random.uniform(0.025, 0.065)
             self.drift = random.uniform(-0.025, 0.025)
-        elif self.depth == 1:  # main rain field
+        elif self.depth == 1:
             self.speed = random.uniform(4.0, 8.5)
             self.length = random.randint(14, 30)
             self.brightness = random.uniform(0.55, 0.82)
             self.mutate_rate = random.uniform(0.045, 0.105)
             self.drift = random.uniform(-0.045, 0.045)
-        else:  # fast foreground streaks
+        else:
             self.speed = random.uniform(8.5, 15.5)
             self.length = random.randint(18, 34)
             self.brightness = random.uniform(0.82, 1.0)
@@ -86,12 +88,11 @@ class MatrixEngine:
         self.streams: List[Stream] = []
         self._glyph_cache: Dict[Tuple[str, int], pygame.Surface] = {}
         self._head_cache: Dict[str, pygame.Surface] = {}
+        self._hero_cache: Dict[str, pygame.Surface] = {}
         self.trail_surface = pygame.Surface((width, height), pygame.SRCALPHA)
         self.trail_surface.fill((0, 0, 0, 0))
+        self.fx = CinematicFX(width, height)
 
-        # Layer 0 is sparse and dim, layer 1 carries the scene, layer 2 creates
-        # occasional bright foreground streaks. The combined field feels dense
-        # without requiring every column to be equally bright.
         layer_specs = (
             (0, max(11, self.char_w + 3), 0),
             (1, max(7, self.char_w - 2), 1),
@@ -101,12 +102,11 @@ class MatrixEngine:
         for depth, spacing, stagger in layer_specs:
             offset = (spacing // 2) if stagger else 0
             for x in range(-spacing + offset, width + spacing, spacing):
-                stream = Stream(x, 0.0, 5.0, 18, [], 0.06, 1.0, depth, 0.0)
+                stream = Stream(float(x), 0.0, 5.0, 18, [], 0.06, 1.0, depth, 0.0)
                 stream.reset(height, self.glyph_set)
                 stream.y = random.uniform(-height, height)
                 self.streams.append(stream)
 
-        # Draw back-to-front so bright foreground drops sit naturally on top.
         self.streams.sort(key=lambda item: item.depth)
 
     def _glyph_image(self, glyph: str, level: int) -> pygame.Surface:
@@ -130,17 +130,34 @@ class MatrixEngine:
         if image is None:
             raw = self.font.render(glyph, True, HEAD_GREEN)
             padded = pygame.Surface(
-                (raw.get_width() + 12, raw.get_height() + 12), pygame.SRCALPHA
+                (raw.get_width() + 14, raw.get_height() + 14), pygame.SRCALPHA
             )
             center = padded.get_rect().center
-            pygame.draw.circle(padded, (35, 255, 95, 42), center, max(8, raw.get_height() // 2))
-            pygame.draw.circle(padded, (90, 255, 140, 28), center, max(11, raw.get_height()))
+            pygame.draw.circle(padded, (35, 255, 95, 50), center, max(8, raw.get_height() // 2))
+            pygame.draw.circle(padded, (90, 255, 140, 28), center, max(12, raw.get_height()))
             padded.blit(raw, raw.get_rect(center=center))
             image = padded
             self._head_cache[glyph] = image
         return image
 
+    def _hero_image(self, glyph: str) -> pygame.Surface:
+        image = self._hero_cache.get(glyph)
+        if image is None:
+            head = self._head_image(glyph)
+            image = pygame.transform.smoothscale(
+                head,
+                (head.get_width() * 2, head.get_height() * 2),
+            )
+            image.set_alpha(150)
+            self._hero_cache[glyph] = image
+        return image
+
+    def trigger_cinematic_flash(self, strength: int = 95) -> None:
+        self.fx.trigger_flash(strength=strength, decay_seconds=0.32)
+
     def update(self, intensity: float = 1.0) -> None:
+        self.fx.update(1.0 / 60.0)
+
         for stream in self.streams:
             stream.y += stream.speed * intensity
             stream.x += stream.drift * intensity
@@ -149,12 +166,10 @@ class MatrixEngine:
                 stream.glyphs[random.randrange(len(stream.glyphs))] = random.choice(self.glyph_set)
 
             if stream.y - stream.length * self.char_h > self.height:
-                # Keep the original column while allowing a tiny cinematic wander.
-                stream.x = int(round(stream.x))
+                stream.x = float(int(round(stream.x)))
                 stream.reset(self.height, self.glyph_set)
 
     def draw(self, surface: pygame.Surface) -> None:
-        # Fade old foreground highlights instead of erasing them immediately.
         self.trail_surface.fill(
             (235, 235, 235, 218), special_flags=pygame.BLEND_RGBA_MULT
         )
@@ -178,23 +193,19 @@ class MatrixEngine:
                         surface.blit(self._glyph_image(glyph, max(2, level)), (x, y))
                     else:
                         surface.blit(head, head_rect, special_flags=pygame.BLEND_RGBA_ADD)
-                        surface.blit(self.font.render(glyph, True, HEAD_GREEN), (x, y))
 
                     if stream.depth == 2:
-                        # Bright foreground heads leave a short optical trail.
                         self.trail_surface.blit(head, head_rect, special_flags=pygame.BLEND_RGBA_ADD)
                         if stream.hero:
-                            hero_glow = pygame.transform.smoothscale(
-                                head,
-                                (head.get_width() * 2, head.get_height() * 2),
-                            )
-                            hero_rect = hero_glow.get_rect(
+                            hero = self._hero_image(glyph)
+                            hero_rect = hero.get_rect(
                                 center=(x + self.char_w // 2, y + self.char_h // 2)
                             )
                             self.trail_surface.blit(
-                                hero_glow, hero_rect, special_flags=pygame.BLEND_RGBA_ADD
+                                hero, hero_rect, special_flags=pygame.BLEND_RGBA_ADD
                             )
                 else:
                     surface.blit(self._glyph_image(glyph, level), (x, y))
 
         surface.blit(self.trail_surface, (0, 0), special_flags=pygame.BLEND_RGBA_ADD)
+        self.fx.apply(surface)
