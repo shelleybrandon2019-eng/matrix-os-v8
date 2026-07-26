@@ -26,10 +26,13 @@ FULLSCREEN = os.getenv("MATRIX_FULLSCREEN", "1") != "0"
 PAGE_SECONDS = float(os.getenv("MATRIX_PAGE_SECONDS", "8"))
 XRP_REFRESH_SECONDS = 30
 CLOCK_Y = 43
-PAGE_TITLE_Y = 105
-COLLECT_SECONDS = 1.45
-MELT_SECONDS = 1.45
-STATIC_SECONDS = max(2.5, PAGE_SECONDS - COLLECT_SECONDS - MELT_SECONDS)
+PAGE_TITLE_Y = 112
+TEMP_LABEL_Y = 194
+TEMP_VALUE_Y = 252
+TEMP_BRIGHT = (235, 255, 240)
+COLLECT_SECONDS = 1.75
+MELT_SECONDS = 1.85
+STATIC_SECONDS = max(2.4, PAGE_SECONDS - COLLECT_SECONDS - MELT_SECONDS)
 
 XRP_SOURCES = (
     ("COINBASE", "https://api.coinbase.com/v2/prices/XRP-USD/spot"),
@@ -72,7 +75,6 @@ def choose_rain_font(size: int) -> pygame.font.Font:
         if os.path.exists(path):
             return pygame.font.Font(path, size)
 
-    # Never fall back to a font that turns Japanese symbols into square boxes.
     return choose_font(size)
 
 
@@ -93,7 +95,7 @@ def fetch_xrp() -> Tuple[Optional[float], str]:
             response = requests.get(
                 url,
                 timeout=6,
-                headers={"User-Agent": "MatrixOS-V9.1/1.0"},
+                headers={"User-Agent": "MatrixOS-V9.3/1.0"},
             )
             response.raise_for_status()
             payload = response.json()
@@ -149,7 +151,7 @@ class MatrixOS:
         pygame.init()
         flags = pygame.FULLSCREEN if FULLSCREEN else 0
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT), flags)
-        pygame.display.set_caption("Matrix OS V9.1 - Drop Collect Melt Test")
+        pygame.display.set_caption("Matrix OS V9.3 - More Rain + Drop Fun")
         pygame.mouse.set_visible(False)
         self.clock = pygame.time.Clock()
 
@@ -157,7 +159,7 @@ class MatrixOS:
         self.clock_font = choose_font(64)
         self.page_font = choose_font(18)
         self.label_font = choose_font(21)
-        self.value_font = choose_font(48)
+        self.value_font = choose_font(50)
         self.xrp_value_font = choose_font(68)
         self.source_font = choose_font(16)
 
@@ -215,11 +217,16 @@ class MatrixOS:
     def render_page(self, surface: pygame.Surface, page_index: int, glow: bool) -> None:
         page = self.PAGES[page_index]
         page_glow = 1 if glow else 0
-        value_glow = 2 if glow else 0
+        value_glow = 3 if glow else 0
 
         if page == "ECOWITT":
             self.glow_text_to(
-                surface, "ECOWITT", self.page_font, (WIDTH // 2, PAGE_TITLE_Y), GREEN, page_glow
+                surface,
+                "ECOWITT",
+                self.page_font,
+                (WIDTH // 2, PAGE_TITLE_Y),
+                GREEN,
+                page_glow,
             )
             items = [
                 ("INSIDE", self.data.inside_f, 125),
@@ -227,20 +234,30 @@ class MatrixOS:
             ]
             for label, value, x in items:
                 self.glow_text_to(
-                    surface, label, self.label_font, (x, 166), GREEN, page_glow
+                    surface,
+                    label,
+                    self.label_font,
+                    (x, TEMP_LABEL_Y),
+                    GREEN,
+                    page_glow,
                 )
                 self.glow_text_to(
                     surface,
                     format_temp(value),
                     self.value_font,
-                    (x, 224),
-                    HEAD_GREEN,
+                    (x, TEMP_VALUE_Y),
+                    TEMP_BRIGHT,
                     value_glow,
                 )
 
         elif page == "GOVEE":
             self.glow_text_to(
-                surface, "GOVEE", self.page_font, (WIDTH // 2, PAGE_TITLE_Y), GREEN, page_glow
+                surface,
+                "GOVEE",
+                self.page_font,
+                (WIDTH // 2, PAGE_TITLE_Y),
+                GREEN,
+                page_glow,
             )
             items = [
                 ("FRONT ROOM", self.data.front_room_f, 125),
@@ -248,29 +265,44 @@ class MatrixOS:
             ]
             for label, value, x in items:
                 self.glow_text_to(
-                    surface, label, self.label_font, (x, 166), GREEN, page_glow
+                    surface,
+                    label,
+                    self.label_font,
+                    (x, TEMP_LABEL_Y),
+                    GREEN,
+                    page_glow,
                 )
                 self.glow_text_to(
                     surface,
                     format_temp(value),
                     self.value_font,
-                    (x, 224),
-                    HEAD_GREEN,
+                    (x, TEMP_VALUE_Y),
+                    TEMP_BRIGHT,
                     value_glow,
                 )
 
         else:
             self.glow_text_to(
-                surface, "XRP LIVE", self.page_font, (WIDTH // 2, PAGE_TITLE_Y), GREEN, page_glow
+                surface,
+                "XRP LIVE",
+                self.page_font,
+                (WIDTH // 2, PAGE_TITLE_Y),
+                GREEN,
+                page_glow,
             )
             self.glow_text_to(
-                surface, "XRP / USD", self.label_font, (WIDTH // 2, 160), GREEN, page_glow
+                surface,
+                "XRP / USD",
+                self.label_font,
+                (WIDTH // 2, 176),
+                GREEN,
+                page_glow,
             )
             self.glow_text_to(
                 surface,
                 format_xrp(self.xrp.price),
                 self.xrp_value_font,
-                (WIDTH // 2, 224),
+                (WIDTH // 2, 242),
                 HEAD_GREEN,
                 value_glow,
             )
@@ -278,7 +310,7 @@ class MatrixOS:
                 surface,
                 self.xrp.source,
                 self.source_font,
-                (WIDTH // 2, 282),
+                (WIDTH // 2, 292),
                 GREEN,
                 page_glow,
             )
@@ -286,9 +318,9 @@ class MatrixOS:
     def rain_source_points(self):
         points = []
         for stream in self.engine.streams:
-            for index in range(min(stream.length, 5)):
+            for index in range(min(stream.length, 8)):
                 y = stream.y - index * self.engine.char_h
-                if 78 <= y <= HEIGHT:
+                if 76 <= y <= HEIGHT:
                     points.append((stream.x, y))
         return points
 
@@ -313,7 +345,7 @@ class MatrixOS:
         self.effect.start_collect()
         self.phase = "collect"
         self.phase_started = time.monotonic()
-        self.glitch_until = time.monotonic() + 0.16
+        self.glitch_until = time.monotonic() + 0.18
 
     def begin_melt(self, step: int = 1) -> None:
         self.pending_step = step
@@ -321,7 +353,7 @@ class MatrixOS:
         self.effect.start_melt()
         self.phase = "melt"
         self.phase_started = time.monotonic()
-        self.glitch_until = time.monotonic() + 0.16
+        self.glitch_until = time.monotonic() + 0.18
 
     def update_phase(self, dt: float) -> None:
         elapsed = time.monotonic() - self.phase_started
@@ -345,8 +377,8 @@ class MatrixOS:
     def draw(self):
         self.screen.fill((0, 0, 0))
 
-        # The Matrix rain never pauses or fades; the page effect is only an overlay.
-        self.engine.update()
+        # Denser background rain remains active under the entire effect.
+        self.engine.update(1.04 if self.phase != "hold" else 1.0)
         self.engine.draw(self.screen)
 
         if self.phase == "hold":
@@ -354,7 +386,6 @@ class MatrixOS:
         elif self.effect is not None:
             self.effect.draw(self.screen)
 
-        # Time always stays clean and on top of every transition.
         self.draw_clock()
         pygame.display.flip()
 
@@ -390,7 +421,7 @@ def main() -> int:
         MatrixOS().run()
         return 0
     except Exception as exc:
-        print(f"Matrix OS V9.1 failed: {exc}", file=sys.stderr)
+        print(f"Matrix OS V9.3 failed: {exc}", file=sys.stderr)
         return 1
     finally:
         pygame.quit()
