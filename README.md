@@ -1,16 +1,21 @@
-# Matrix OS V9.1 — Drop Collect/Melt Test
+# Matrix OS V9.4 — Cinematic Build
 
 A cinematic Raspberry Pi Matrix display built for a 480×320 screen.
 
-## V9.1 transition test
+## V9.4 movie-quality pass
 
-The Matrix rain never pauses. For every page change:
+The `main` branch now includes:
 
-1. Falling Matrix glyphs pull together and form the next page.
-2. The page locks into clean readable text.
-3. The text breaks back into glyphs and melts downward off the screen.
+- Three visual depths of Matrix rain: distant, middle, and foreground
+- Cached glyph rendering for smoother performance on the Pi
+- Bright foreground heads, bloom, and persistent motion trails
+- Subtle green atmospheric haze, scanlines, edge vignette, and film flicker
+- A light sweep and bloom pulse while temperatures or XRP form
+- Hero drops that burn brighter and fall with longer tails
+- A slower liquid melt back into the rain
+- Lower, brighter temperature readings
 
-The large clock stays fixed and readable above the effect.
+The large clock remains fixed and readable above every effect.
 
 ## Display rotation
 
@@ -18,7 +23,7 @@ The large clock stays fixed and readable above the effect.
 2. **GOVEE** — Front Room and Bedroom temperatures
 3. **XRP LIVE** — Live XRP/USD price
 
-Only two temperatures are shown at once. The complete collect, hold, and melt cycle lasts about 8 seconds by default.
+Only two temperatures appear at once. The complete collect, hold, and melt cycle lasts about 9 seconds by default.
 
 ## Controls
 
@@ -28,14 +33,17 @@ Only two temperatures are shown at once. The complete collect, hold, and melt cy
 
 ## Version history
 
-The previous versions are preserved as repository branches:
+Previous builds are preserved as repository branches, including:
 
 ```text
 archive/matrix-os-v8
 archive/matrix-os-v9-static
+archive/matrix-os-v9.1-first-test
+archive/matrix-os-v9.2-drop-test
+archive/matrix-os-v9.3
 ```
 
-The `main` branch is the V9.1 animation test.
+The `main` branch is Matrix OS V9.4 Cinematic.
 
 ## Install on the Pi
 
@@ -48,8 +56,6 @@ chmod +x install.sh start_matrix.sh
 ```
 
 ## Live data configuration
-
-Copy the example configuration:
 
 ```bash
 cp config.example.env config.env
@@ -65,7 +71,7 @@ XRP uses Coinbase first, then CoinGecko and Kraken as automatic fallbacks.
 Change the complete page-cycle time in `config.env`:
 
 ```bash
-MATRIX_PAGE_SECONDS=8
+MATRIX_PAGE_SECONDS=9
 ```
 
 ## Automatic updates
