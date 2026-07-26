@@ -1,0 +1,4 @@
+Matrix OS V9.5 Sharp Trails
+Forced restart deployment: 2026-07-26
+Branch: main
+Purpose: trigger Pi auto-updater and restart main.py
