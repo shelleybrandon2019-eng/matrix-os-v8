@@ -27,22 +27,22 @@ force_sync() {
 }
 
 kill_legacy_matrix() {
-  # Remove the old standalone Matrix versions so only this repo's main.py owns
-  # the display. Do not match this start_matrix.sh process.
   pkill -f '^/usr/bin/python3 /home/b/v2_matrix.py$' 2>/dev/null || true
   pkill -f '^python3 /home/b/v2_matrix.py$' 2>/dev/null || true
   pkill -f '^/usr/bin/python3 /home/b/matrix_time_glitch.py$' 2>/dev/null || true
   pkill -f '^python3 /home/b/matrix_time_glitch.py$' 2>/dev/null || true
   pkill -f '^/usr/bin/python3 /home/b/matrix-os-v8/v2_matrix.py$' 2>/dev/null || true
   pkill -f '^python3 /home/b/matrix-os-v8/v2_matrix.py$' 2>/dev/null || true
+  pkill -f '^/usr/bin/python3 cinematic_director.py$' 2>/dev/null || true
+  pkill -f '^python3 cinematic_director.py$' 2>/dev/null || true
 }
 
 force_sync || true
 kill_legacy_matrix
 
 while true; do
-  echo "[Matrix OS] starting commit $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
-  /usr/bin/python3 main.py &
+  echo "[Matrix OS V10] starting commit $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  /usr/bin/python3 cinematic_director.py &
   APP_PID=$!
 
   while kill -0 "$APP_PID" 2>/dev/null; do
@@ -53,7 +53,7 @@ while true; do
     REMOTE_SHA="$(git rev-parse "origin/$BRANCH" 2>/dev/null || true)"
 
     if [[ -n "$REMOTE_SHA" && "$LOCAL_SHA" != "$REMOTE_SHA" ]]; then
-      echo "[Matrix OS] update detected: ${LOCAL_SHA:0:7} -> ${REMOTE_SHA:0:7}"
+      echo "[Matrix OS V10] update detected: ${LOCAL_SHA:0:7} -> ${REMOTE_SHA:0:7}"
       kill "$APP_PID" 2>/dev/null || true
       wait "$APP_PID" 2>/dev/null || true
       force_sync || true
@@ -68,6 +68,6 @@ while true; do
   fi
 
   wait "$APP_PID" 2>/dev/null || true
-  echo "[Matrix OS] main.py stopped; restarting in 2 seconds"
+  echo "[Matrix OS V10] cinematic_director.py stopped; restarting in 2 seconds"
   sleep 2
 done
