@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Matrix OS: full-screen cinematic rain with Inside/Outside form-and-melt transitions."""
+"""Matrix OS: dark cinematic Matrix rain with Inside/Outside form-and-melt transitions."""
 
 from __future__ import annotations
 
@@ -16,13 +16,16 @@ import pygame
 
 from live_data import LiveData
 
+
 WIDTH, HEIGHT, FPS = 480, 320, 60
 FULLSCREEN = os.getenv("MATRIX_FULLSCREEN", "1") != "0"
 
 IDLE_SECONDS = 3.8
-FORM_SECONDS = 1.65
+FORM_SECONDS = 1.75
 HOLD_SECONDS = 4.8
-MELT_SECONDS = 1.85
+MELT_SECONDS = 1.95
+
+FLOOR_Y = 226
 
 MATRIX_CHARS = (
     "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ"
@@ -30,9 +33,10 @@ MATRIX_CHARS = (
 )
 
 BLACK = (0, 0, 0)
-GREEN = (0, 255, 70)
-DIM_GREEN = (0, 45, 18)
-HEAD_GREEN = (218, 255, 226)
+GREEN = (0, 205, 55)
+BRIGHT_GREEN = (0, 255, 76)
+DIM_GREEN = (0, 33, 12)
+HEAD_GREEN = (205, 255, 215)
 
 Color = Tuple[int, int, int]
 Point = Tuple[float, float]
@@ -84,7 +88,7 @@ def temp_color(value: Optional[float]) -> Color:
     if value < 65:
         return (45, 215, 235)
     if value < 78:
-        return (120, 255, 155)
+        return (115, 255, 150)
     if value < 88:
         return (255, 205, 55)
     return (255, 75, 38)
@@ -106,40 +110,93 @@ class RainStream:
     font: pygame.font.Font
     depth: int
     pulse: float = 1.0
+    head_hot: bool = False
+    drift: float = 0.0
 
     def reset(self, height: int) -> None:
-        self.y = random.uniform(-height * 1.5, -20)
+        self.y = random.uniform(-height * 1.8, -20)
         if self.depth == 0:
-            self.speed = random.uniform(45.0, 90.0)
-            self.length = random.randint(11, 24)
-            self.brightness = random.uniform(0.34, 0.58)
+            self.speed = random.uniform(16.0, 38.0)
+            self.length = random.randint(24, 50)
+            self.brightness = random.uniform(0.10, 0.25)
+            self.head_hot = False
+        elif self.depth == 1:
+            self.speed = random.uniform(34.0, 78.0)
+            self.length = random.randint(17, 34)
+            self.brightness = random.uniform(0.24, 0.52)
+            self.head_hot = random.random() < 0.16
         else:
-            self.speed = random.uniform(85.0, 190.0)
-            self.length = random.randint(14, 30)
-            self.brightness = random.uniform(0.72, 1.0)
+            self.speed = random.uniform(76.0, 158.0)
+            self.length = random.randint(12, 27)
+            self.brightness = random.uniform(0.48, 0.88)
+            self.head_hot = random.random() < 0.62
+
         self.glyphs = [random.choice(MATRIX_CHARS) for _ in range(self.length)]
         self.pulse = 1.0
+        self.drift = random.uniform(-0.12, 0.12)
 
 
 class CinematicRain:
-    """Dense two-depth rain that covers the full screen, including behind the clock."""
+    """Dark layered code rain inspired by the Matrix city look."""
+
+    LAYER_CONFIG = (
+        # depth, font size, column spacing
+        (0, 9, 12),
+        (1, 13, 18),
+        (2, 17, 27),
+    )
+
+    PALETTES = {
+        0: (
+            (0, 8, 3),
+            (0, 14, 5),
+            (0, 20, 7),
+            (0, 27, 9),
+            (0, 34, 11),
+            (0, 42, 14),
+            (0, 53, 17),
+            (0, 66, 20),
+        ),
+        1: (
+            (0, 12, 4),
+            (0, 22, 7),
+            (0, 34, 11),
+            (0, 49, 15),
+            (0, 67, 20),
+            (0, 88, 25),
+            (0, 112, 31),
+            (0, 145, 39),
+        ),
+        2: (
+            (0, 18, 7),
+            (0, 31, 11),
+            (0, 48, 16),
+            (0, 70, 22),
+            (0, 96, 29),
+            (0, 128, 36),
+            (0, 170, 46),
+            (0, 220, 61),
+        ),
+    }
 
     def __init__(self) -> None:
         self.layers: List[RainStream] = []
-        background_font = choose_matrix_font(14, bold=True)
-        foreground_font = choose_matrix_font(17, bold=True)
+        self.rain_surface = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        self.reflection_surface = pygame.Surface((WIDTH, HEIGHT - FLOOR_Y), pygame.SRCALPHA)
+        self._reflection_frame = 0
 
-        for depth, font, spacing in ((0, background_font, 21), (1, foreground_font, 16)):
-            offset = spacing // 2 if depth == 0 else 0
+        for depth, font_size, spacing in self.LAYER_CONFIG:
+            font = choose_matrix_font(font_size, bold=True)
+            offset = spacing // 2 if depth == 1 else random.randint(0, max(0, spacing - 1))
             for x in range(-spacing + offset, WIDTH + spacing, spacing):
                 stream = RainStream(
                     x=float(x),
                     y=random.uniform(-HEIGHT, HEIGHT),
-                    speed=100.0,
-                    length=18,
+                    speed=50.0,
+                    length=20,
                     glyphs=[],
                     brightness=1.0,
-                    spacing=max(14, font.get_linesize()),
+                    spacing=max(font_size + 1, font.get_linesize()),
                     font=font,
                     depth=depth,
                 )
@@ -149,6 +206,21 @@ class CinematicRain:
 
         self.layers.sort(key=lambda item: item.depth)
         self._glyph_cache: dict[Tuple[int, str, int, bool], pygame.Surface] = {}
+        self._vignette = self._build_vignette()
+
+    @staticmethod
+    def _build_vignette() -> pygame.Surface:
+        surface = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        # Darken corners and edges, but never create a solid top bar.
+        for index in range(34):
+            alpha = max(0, 42 - index)
+            pygame.draw.rect(
+                surface,
+                (0, 0, 0, alpha),
+                pygame.Rect(index, index, WIDTH - index * 2, HEIGHT - index * 2),
+                1,
+            )
+        return surface
 
     def _glyph_image(
         self, stream: RainStream, glyph: str, level: int, head: bool = False
@@ -157,76 +229,138 @@ class CinematicRain:
         image = self._glyph_cache.get(key)
         if image is None:
             if head:
-                color = HEAD_GREEN if stream.depth == 1 else (95, 205, 125)
+                if stream.depth == 2:
+                    color = HEAD_GREEN
+                elif stream.depth == 1:
+                    color = (55, 175, 85)
+                else:
+                    color = (0, 62, 23)
             else:
-                palette = (
-                    (0, 28, 11),
-                    (0, 45, 18),
-                    (0, 70, 25),
-                    (0, 98, 31),
-                    (0, 132, 38),
-                    (0, 170, 47),
-                    (0, 215, 58),
-                    GREEN,
-                )
-                color = palette[max(0, min(7, level))]
+                color = self.PALETTES[stream.depth][max(0, min(7, level))]
             image = stream.font.render(glyph, True, color)
             self._glyph_cache[key] = image
         return image
 
     def update(self, dt: float, energy: float = 0.0) -> None:
         for stream in self.layers:
-            if random.random() < (0.003 + energy * 0.006):
-                stream.pulse = random.uniform(1.25, 1.85)
-            stream.pulse += (1.0 - stream.pulse) * min(1.0, dt * 4.5)
-            stream.y += stream.speed * stream.pulse * (1.0 + energy * 0.22) * dt
+            pulse_chance = 0.0012 + energy * 0.004
+            if random.random() < pulse_chance:
+                stream.pulse = random.uniform(1.15, 1.65)
+            stream.pulse += (1.0 - stream.pulse) * min(1.0, dt * 3.0)
+            stream.y += stream.speed * stream.pulse * (1.0 + energy * 0.12) * dt
+            stream.x += stream.drift * dt
 
-            mutations = 2 if stream.depth == 1 else 1
-            for _ in range(mutations):
-                if random.random() < dt * (6.0 if stream.depth == 1 else 3.5):
-                    stream.glyphs[random.randrange(len(stream.glyphs))] = random.choice(MATRIX_CHARS)
+            mutation_rate = (1.4, 2.8, 5.0)[stream.depth]
+            if random.random() < dt * mutation_rate:
+                stream.glyphs[random.randrange(len(stream.glyphs))] = random.choice(MATRIX_CHARS)
 
             if stream.y - stream.length * stream.spacing > HEIGHT:
                 stream.reset(HEIGHT)
 
     def source_points(self, count: int) -> List[Point]:
         visible: List[Point] = []
+        weighted: List[Point] = []
         for stream in self.layers:
-            for index in range(min(stream.length, 12)):
+            for index in range(min(stream.length, 14)):
                 y = stream.y - index * stream.spacing
                 if 0 <= y <= HEIGHT:
-                    visible.append((stream.x, y))
-        if not visible:
-            visible = [
+                    point = (stream.x, y)
+                    visible.append(point)
+                    if stream.depth >= 1:
+                        weighted.extend((point, point))
+        pool = weighted or visible
+        if not pool:
+            pool = [
                 (random.uniform(0, WIDTH), random.uniform(0, HEIGHT))
-                for _ in range(count)
+                for _ in range(max(1, count))
             ]
-        return [random.choice(visible) for _ in range(count)]
+        return [random.choice(pool) for _ in range(count)]
 
-    def draw(self, surface: pygame.Surface, energy: float = 0.0) -> None:
+    def _draw_streams(self, surface: pygame.Surface, energy: float) -> None:
         for stream in self.layers:
             for index, glyph in enumerate(stream.glyphs):
                 y = int(stream.y - index * stream.spacing)
-                if y < 0 or y > HEIGHT:
+                if y < -stream.spacing or y > HEIGHT:
                     continue
 
-                falloff = max(0.05, 1.0 - index / max(1, stream.length - 1))
-                value = falloff * stream.brightness
-                if index == 0:
-                    image = self._glyph_image(stream, glyph, 7, head=True)
-                    if stream.depth == 1:
+                falloff = max(0.025, 1.0 - index / max(1, stream.length - 1))
+                # Steeper falloff keeps most of the scene dark like the reference.
+                shaped = falloff * falloff
+                value = shaped * stream.brightness
+
+                is_head = index == 0 and stream.head_hot
+                if is_head:
+                    if stream.depth == 2:
                         glow = self._glyph_image(stream, glyph, 2, head=False)
                         surface.blit(glow, (int(stream.x) - 1, y))
                         surface.blit(glow, (int(stream.x) + 1, y))
-                    surface.blit(image, (int(stream.x), y))
+                    surface.blit(self._glyph_image(stream, glyph, 7, head=True), (int(stream.x), y))
                 else:
                     level = int(clamp(round(value * 7), 0, 7))
-                    if energy > 0 and random.random() < energy * 0.055:
+                    if energy > 0 and stream.depth > 0 and random.random() < energy * 0.025:
                         level = min(7, level + 1)
                     surface.blit(
                         self._glyph_image(stream, glyph, level),
                         (int(stream.x), y),
                     )
+
+    def _draw_reflection(self, destination: pygame.Surface) -> None:
+        self._reflection_frame += 1
+        if self._reflection_frame % 3 == 1:
+            self.reflection_surface.fill((0, 0, 0, 0))
+
+            source_rect = pygame.Rect(0, 0, WIDTH, FLOOR_Y)
+            reflected = pygame.transform.flip(
+                self.rain_surface.subsurface(source_rect), False, True
+            )
+            # Compress and blur the mirrored code into a wet pavement glow.
+            small = pygame.transform.smoothscale(
+                reflected,
+                (max(1, WIDTH // 4), max(1, (HEIGHT - FLOOR_Y) // 3)),
+            )
+            blurred = pygame.transform.smoothscale(small, (WIDTH, HEIGHT - FLOOR_Y))
+            blurred.set_alpha(52)
+            self.reflection_surface.blit(blurred, (0, 0))
+
+            # Horizontal glints imitate wet pavement without becoming a bright band.
+            for stream in self.layers:
+                if stream.depth != 2 or not stream.head_hot:
+                    continue
+                y = stream.y
+                if FLOOR_Y - 40 <= y <= HEIGHT + 20 and random.random() < 0.35:
+                    reflected_y = int(
+                        FLOOR_Y + abs(FLOOR_Y - min(y, HEIGHT)) * 0.30
+                    )
+                    width = random.randint(2, 8)
+                    alpha = random.randint(35, 85)
+                    pygame.draw.line(
+                        self.reflection_surface,
+                        (0, random.randint(80, 155), random.randint(25, 55), alpha),
+                        (int(stream.x) - width, reflected_y - FLOOR_Y),
+                        (int(stream.x) + width, reflected_y - FLOOR_Y),
+                        1,
+                    )
+
+            # Fade reflection toward the bottom.
+            fade_overlay = pygame.Surface(
+                (WIDTH, HEIGHT - FLOOR_Y), pygame.SRCALPHA
+            )
+            reflection_h = HEIGHT - FLOOR_Y
+            for row in range(reflection_h):
+                alpha = int(80 + (row / max(1, reflection_h - 1)) * 140)
+                pygame.draw.line(
+                    fade_overlay, (0, 0, 0, alpha), (0, row), (WIDTH, row)
+                )
+            self.reflection_surface.blit(fade_overlay, (0, 0))
+
+        destination.blit(self.reflection_surface, (0, FLOOR_Y))
+
+    def draw(self, surface: pygame.Surface, energy: float = 0.0) -> None:
+        self.rain_surface.fill((0, 0, 0, 0))
+        self._draw_streams(self.rain_surface, energy)
+        surface.blit(self.rain_surface, (0, 0))
+        self._draw_reflection(surface)
+        surface.blit(self._vignette, (0, 0))
 
 
 @dataclass
@@ -279,7 +413,7 @@ class RainTextTransition:
         mask.blit(value_image, value_rect)
 
         candidates: List[Tuple[int, int]] = []
-        for y in range(92, HEIGHT - 5, 5):
+        for y in range(90, HEIGHT - 5, 5):
             for x in range(3, WIDTH - 3, 5):
                 if mask.get_at((x, y)).a > 60:
                     candidates.append((x, y))
@@ -298,10 +432,10 @@ class RainTextTransition:
                     x=start_x,
                     y=start_y,
                     glyph=random.choice(MATRIX_CHARS),
-                    delay=random.uniform(0.0, 0.42),
+                    delay=random.uniform(0.0, 0.46),
                     phase=random.uniform(0.0, math.tau),
                     speed=random.uniform(0.85, 1.15),
-                    color=mix(GREEN, accent, random.choice((0.42, 0.58, 0.74, 0.90))),
+                    color=mix(BRIGHT_GREEN, accent, random.choice((0.40, 0.56, 0.72, 0.88))),
                 )
             )
 
@@ -319,9 +453,9 @@ class RainTextTransition:
         self.crisp_alpha = 0
         for particle in self.particles:
             particle.glyph = random.choice(MATRIX_CHARS)
-            particle.vx = random.uniform(-24.0, 24.0)
-            particle.vy = random.uniform(45.0, 125.0)
-            particle.delay = random.uniform(0.0, 0.38)
+            particle.vx = random.uniform(-20.0, 20.0)
+            particle.vy = random.uniform(52.0, 132.0)
+            particle.delay = random.uniform(0.0, 0.42)
 
     def update(self, dt: float) -> None:
         self.elapsed += dt
@@ -334,11 +468,11 @@ class RainTextTransition:
                     1.0,
                 )
                 eased = ease_in_out(local)
-                arc = math.sin(local * math.pi) * (10.0 + 12.0 * particle.speed)
+                arc = math.sin(local * math.pi) * (8.0 + 10.0 * particle.speed)
                 particle.x = particle.start_x + (particle.target_x - particle.start_x) * eased
                 particle.y = particle.start_y + (particle.target_y - particle.start_y) * eased
                 particle.x += math.cos(particle.phase + local * math.tau) * arc * (1.0 - local)
-                if random.random() < dt * 8.0 * (1.0 - local):
+                if random.random() < dt * 7.0 * (1.0 - local):
                     particle.glyph = random.choice(MATRIX_CHARS)
             self.crisp_alpha = int(
                 255
@@ -352,10 +486,10 @@ class RainTextTransition:
             for particle in self.particles:
                 if self.elapsed < particle.delay:
                     continue
-                particle.vy += 220.0 * dt
+                particle.vy += 205.0 * dt
                 particle.x += particle.vx * dt
                 particle.y += particle.vy * dt
-                if random.random() < dt * 12.0:
+                if random.random() < dt * 11.0:
                     particle.glyph = random.choice(MATRIX_CHARS)
 
     def form_done(self) -> bool:
@@ -376,7 +510,7 @@ class RainTextTransition:
                     1.0,
                 )
                 level = round(local * 5) / 5.0
-                color = mix(GREEN, particle.color, level)
+                color = mix((0, 90, 28), particle.color, level)
             else:
                 if self.elapsed < particle.delay or particle.y > HEIGHT + 20:
                     continue
@@ -393,8 +527,19 @@ class RainTextTransition:
             value_image = self.value_font.render(self.value, True, self.accent)
             title_image.set_alpha(self.crisp_alpha)
             value_image.set_alpha(self.crisp_alpha)
-            surface.blit(title_image, title_image.get_rect(center=(WIDTH // 2, 145)))
-            surface.blit(value_image, value_image.get_rect(center=(WIDTH // 2, 228)))
+
+            title_shadow = self.title_font.render(self.title, True, BLACK)
+            value_shadow = self.value_font.render(self.value, True, BLACK)
+            title_shadow.set_alpha(self.crisp_alpha)
+            value_shadow.set_alpha(self.crisp_alpha)
+
+            title_rect = title_image.get_rect(center=(WIDTH // 2, 145))
+            value_rect = value_image.get_rect(center=(WIDTH // 2, 228))
+            for dx, dy in ((-2, 0), (2, 0), (0, -2), (0, 2)):
+                surface.blit(title_shadow, title_rect.move(dx, dy))
+                surface.blit(value_shadow, value_rect.move(dx, dy))
+            surface.blit(title_image, title_rect)
+            surface.blit(value_image, value_rect)
 
 
 class MatrixOS:
@@ -407,7 +552,7 @@ class MatrixOS:
         pygame.init()
         flags = pygame.FULLSCREEN if FULLSCREEN else 0
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT), flags)
-        pygame.display.set_caption("Matrix OS - Full Screen Cinematic Rain")
+        pygame.display.set_caption("Matrix OS - Dark Cinematic City Rain")
         pygame.mouse.set_visible(False)
         self.clock = pygame.time.Clock()
 
@@ -453,7 +598,7 @@ class MatrixOS:
 
     def update(self, dt: float) -> None:
         self.data.refresh()
-        energy = 0.38 if self.phase in ("form", "melt") else 0.0
+        energy = 0.26 if self.phase in ("form", "melt") else 0.0
         self.rain.update(dt, energy)
 
         elapsed = time.monotonic() - self.phase_started
@@ -485,14 +630,14 @@ class MatrixOS:
         for dx, dy in ((-2, 0), (2, 0), (0, -2), (0, 2), (-1, -1), (1, 1)):
             self.screen.blit(shadow, rect.move(dx, dy))
 
-        glow = self.clock_font.render(text, True, (0, 90, 28))
+        glow = self.clock_font.render(text, True, (0, 72, 23))
         self.screen.blit(glow, rect.move(-1, 0))
         self.screen.blit(glow, rect.move(1, 0))
         self.screen.blit(image, rect)
 
     def draw(self) -> None:
         self.screen.fill(BLACK)
-        energy = 0.32 if self.phase in ("form", "melt") else 0.0
+        energy = 0.22 if self.phase in ("form", "melt") else 0.0
         self.rain.draw(self.screen, energy)
         if self.transition is not None and self.phase in ("form", "hold", "melt"):
             self.transition.draw(self.screen)
