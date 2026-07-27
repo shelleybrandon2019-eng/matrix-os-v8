@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Matrix OS: cinematic rain with Inside/Outside form-and-melt transitions."""
+"""Matrix OS: full-screen cinematic rain with Inside/Outside form-and-melt transitions."""
 
 from __future__ import annotations
 
@@ -18,7 +18,6 @@ from live_data import LiveData
 
 WIDTH, HEIGHT, FPS = 480, 320, 60
 FULLSCREEN = os.getenv("MATRIX_FULLSCREEN", "1") != "0"
-CLOCK_ZONE_H = 82
 
 IDLE_SECONDS = 3.8
 FORM_SECONDS = 1.65
@@ -32,7 +31,6 @@ MATRIX_CHARS = (
 
 BLACK = (0, 0, 0)
 GREEN = (0, 255, 70)
-MID_GREEN = (0, 165, 48)
 DIM_GREEN = (0, 45, 18)
 HEAD_GREEN = (218, 255, 226)
 
@@ -63,7 +61,7 @@ def choose_font(size: int, *, bold: bool = False) -> pygame.font.Font:
 
 
 def choose_matrix_font(size: int, *, bold: bool = True) -> pygame.font.Font:
-    names = (
+    for name in (
         "Noto Sans Mono CJK JP",
         "Noto Sans CJK JP",
         "Noto Sans JP",
@@ -71,8 +69,7 @@ def choose_matrix_font(size: int, *, bold: bool = True) -> pygame.font.Font:
         "TakaoGothic",
         "VL Gothic",
         "DejaVu Sans Mono",
-    )
-    for name in names:
+    ):
         path = pygame.font.match_font(name, bold=bold)
         if path:
             return pygame.font.Font(path, size)
@@ -125,7 +122,7 @@ class RainStream:
 
 
 class CinematicRain:
-    """Dense two-depth Matrix rain with crisp heads and long graded trails."""
+    """Dense two-depth rain that covers the full screen, including behind the clock."""
 
     def __init__(self) -> None:
         self.layers: List[RainStream] = []
@@ -197,11 +194,11 @@ class CinematicRain:
         for stream in self.layers:
             for index in range(min(stream.length, 12)):
                 y = stream.y - index * stream.spacing
-                if CLOCK_ZONE_H <= y <= HEIGHT:
+                if 0 <= y <= HEIGHT:
                     visible.append((stream.x, y))
         if not visible:
             visible = [
-                (random.uniform(0, WIDTH), random.uniform(CLOCK_ZONE_H, HEIGHT))
+                (random.uniform(0, WIDTH), random.uniform(0, HEIGHT))
                 for _ in range(count)
             ]
         return [random.choice(visible) for _ in range(count)]
@@ -210,7 +207,7 @@ class CinematicRain:
         for stream in self.layers:
             for index, glyph in enumerate(stream.glyphs):
                 y = int(stream.y - index * stream.spacing)
-                if y < CLOCK_ZONE_H or y > HEIGHT:
+                if y < 0 or y > HEIGHT:
                     continue
 
                 falloff = max(0.05, 1.0 - index / max(1, stream.length - 1))
@@ -282,9 +279,8 @@ class RainTextTransition:
         mask.blit(value_image, value_rect)
 
         candidates: List[Tuple[int, int]] = []
-        sample_step = 5
-        for y in range(CLOCK_ZONE_H + 10, HEIGHT - 5, sample_step):
-            for x in range(3, WIDTH - 3, sample_step):
+        for y in range(92, HEIGHT - 5, 5):
+            for x in range(3, WIDTH - 3, 5):
                 if mask.get_at((x, y)).a > 60:
                     candidates.append((x, y))
 
@@ -305,11 +301,7 @@ class RainTextTransition:
                     delay=random.uniform(0.0, 0.42),
                     phase=random.uniform(0.0, math.tau),
                     speed=random.uniform(0.85, 1.15),
-                    color=mix(
-                        GREEN,
-                        accent,
-                        random.choice((0.42, 0.58, 0.74, 0.90)),
-                    ),
+                    color=mix(GREEN, accent, random.choice((0.42, 0.58, 0.74, 0.90))),
                 )
             )
 
@@ -345,11 +337,7 @@ class RainTextTransition:
                 arc = math.sin(local * math.pi) * (10.0 + 12.0 * particle.speed)
                 particle.x = particle.start_x + (particle.target_x - particle.start_x) * eased
                 particle.y = particle.start_y + (particle.target_y - particle.start_y) * eased
-                particle.x += (
-                    math.cos(particle.phase + local * math.tau)
-                    * arc
-                    * (1.0 - local)
-                )
+                particle.x += math.cos(particle.phase + local * math.tau) * arc * (1.0 - local)
                 if random.random() < dt * 8.0 * (1.0 - local):
                     particle.glyph = random.choice(MATRIX_CHARS)
             self.crisp_alpha = int(
@@ -419,7 +407,7 @@ class MatrixOS:
         pygame.init()
         flags = pygame.FULLSCREEN if FULLSCREEN else 0
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT), flags)
-        pygame.display.set_caption("Matrix OS - Cinematic Inside Outside")
+        pygame.display.set_caption("Matrix OS - Full Screen Cinematic Rain")
         pygame.mouse.set_visible(False)
         self.clock = pygame.time.Clock()
 
@@ -492,17 +480,15 @@ class MatrixOS:
         text = datetime.now().strftime("%I:%M %p").lstrip("0")
         image = self.clock_font.render(text, True, HEAD_GREEN)
         rect = image.get_rect(center=(WIDTH // 2, 38))
-        glow = self.clock_font.render(text, True, (0, 70, 22))
+
+        shadow = self.clock_font.render(text, True, BLACK)
+        for dx, dy in ((-2, 0), (2, 0), (0, -2), (0, 2), (-1, -1), (1, 1)):
+            self.screen.blit(shadow, rect.move(dx, dy))
+
+        glow = self.clock_font.render(text, True, (0, 90, 28))
         self.screen.blit(glow, rect.move(-1, 0))
         self.screen.blit(glow, rect.move(1, 0))
         self.screen.blit(image, rect)
-        pygame.draw.line(
-            self.screen,
-            (0, 48, 18),
-            (0, CLOCK_ZONE_H - 2),
-            (WIDTH, CLOCK_ZONE_H - 2),
-            1,
-        )
 
     def draw(self) -> None:
         self.screen.fill(BLACK)
@@ -526,8 +512,7 @@ class MatrixOS:
                     elif event.key in (pygame.K_SPACE, pygame.K_RIGHT):
                         if self.phase == "hold":
                             self.begin_melt()
-                        else:
-                            self.page_index = (self.page_index + 1) % len(self.PAGES)
+                        elif self.phase == "idle":
                             self.begin_form()
 
             now = time.monotonic()
@@ -545,7 +530,7 @@ def main() -> int:
     except KeyboardInterrupt:
         return 0
     except Exception as exc:
-        print(f"Matrix OS cinematic failed: {exc}", file=sys.stderr)
+        print(f"Matrix OS failed: {exc}", file=sys.stderr)
         return 1
     finally:
         pygame.quit()
