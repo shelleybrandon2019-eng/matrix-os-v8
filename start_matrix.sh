@@ -16,26 +16,19 @@ fi
 
 force_sync() {
   git fetch origin "$BRANCH" || return 1
-
   local remote_sha
   remote_sha="$(git rev-parse "origin/$BRANCH" 2>/dev/null || true)"
   [[ -n "$remote_sha" ]] || return 1
-
   git checkout -B "$BRANCH" "origin/$BRANCH" || return 1
   git reset --hard "origin/$BRANCH" || return 1
 }
 
 kill_legacy_matrix() {
-  pkill -f '^/usr/bin/python3 /home/b/v2_matrix.py$' 2>/dev/null || true
-  pkill -f '^python3 /home/b/v2_matrix.py$' 2>/dev/null || true
-  pkill -f '^/usr/bin/python3 /home/b/matrix_time_glitch.py$' 2>/dev/null || true
-  pkill -f '^python3 /home/b/matrix_time_glitch.py$' 2>/dev/null || true
-  pkill -f '^/usr/bin/python3 /home/b/matrix-os-v8/v2_matrix.py$' 2>/dev/null || true
-  pkill -f '^python3 /home/b/matrix-os-v8/v2_matrix.py$' 2>/dev/null || true
-  pkill -f '^/usr/bin/python3 cinematic_director.py$' 2>/dev/null || true
-  pkill -f '^python3 cinematic_director.py$' 2>/dev/null || true
-  pkill -f '^/usr/bin/python3 esp32_clock_bridge.py$' 2>/dev/null || true
-  pkill -f '^python3 esp32_clock_bridge.py$' 2>/dev/null || true
+  pkill -f '/home/b/v2_matrix.py' 2>/dev/null || true
+  pkill -f '/home/b/matrix_time_glitch.py' 2>/dev/null || true
+  pkill -f 'cinematic_director.py' 2>/dev/null || true
+  pkill -f 'temp_scene_director.py' 2>/dev/null || true
+  pkill -f 'esp32_clock_bridge.py' 2>/dev/null || true
 }
 
 stop_children() {
@@ -63,13 +56,12 @@ force_sync || true
 kill_legacy_matrix
 
 while true; do
-  echo "[Matrix OS V10 — Hub Cut] starting commit $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
-
+  echo "[Matrix OS V10] temperature cinema + ESP32 clock, commit $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
   start_bridge
-  /usr/bin/python3 cinematic_director.py &
+  /usr/bin/python3 temp_scene_director.py &
   APP_PID=$!
-
   UPDATED=0
+
   while kill -0 "$APP_PID" 2>/dev/null; do
     sleep "$CHECK_SECONDS"
 
@@ -98,6 +90,6 @@ while true; do
   fi
 
   stop_children
-  echo "[Matrix OS V10] cinematic_director.py stopped; restarting in 2 seconds"
+  echo "[Matrix OS V10] temperature director stopped; restarting in 2 seconds"
   sleep 2
 done
