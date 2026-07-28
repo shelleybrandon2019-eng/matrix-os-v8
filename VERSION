@@ -1,3 +1,4 @@
-Matrix OS — Cinematic Inside Outside
-Deploy: 2026-07-26
-Bigger clock. Only Inside and Outside. Two-depth cinematic rain. Readings form from rain and melt back into Matrix code.
+Matrix OS V10 — Hub Cut
+Pi: 480x320 cinematic Matrix hub with clock, giant Inside/Outside reveals, robot, Agent, lightning, portal, scan, and bullet-time scenes.
+ESP32: 320x172 dedicated giant clock on black with autonomous 20–60 second cutscenes.
+Serial: /dev/ttyACM0
