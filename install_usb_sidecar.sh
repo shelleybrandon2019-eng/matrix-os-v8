@@ -18,7 +18,6 @@ if [[ ! -e "$PORT" ]]; then
 fi
 
 echo "ESP32 found at $PORT"
-
 sudo systemctl stop "$SERVICE" 2>/dev/null || true
 
 sudo apt-get update
@@ -40,10 +39,6 @@ monitor_port = /dev/ttyACM0
 monitor_speed = 115200
 upload_speed = 460800
 
-board_upload.flash_size = 16MB
-board_build.flash_size = 16MB
-board_build.flash_mode = qio
-
 build_flags =
     -DARDUINO_USB_MODE=1
     -DARDUINO_USB_CDC_ON_BOOT=1
@@ -57,7 +52,8 @@ cat > "$FIRMWARE/src/main.cpp" <<'CPP'
 #include <Arduino_GFX_Library.h>
 #include <math.h>
 
-// Waveshare ESP32-S3-LCD-1.47: ST7789, 172x320
+// Waveshare ESP32-S3-LCD-1.47: physical panel 172x320.
+// The board is used clockwise in landscape, giving a logical 320x172 canvas.
 #define LCD_MOSI 45
 #define LCD_SCLK 40
 #define LCD_CS   42
@@ -65,31 +61,33 @@ cat > "$FIRMWARE/src/main.cpp" <<'CPP'
 #define LCD_RST  39
 #define LCD_BL   48
 
-#define SCREEN_W 172
-#define SCREEN_H 320
+#define PANEL_W 172
+#define PANEL_H 320
+#define SCREEN_W 320
+#define SCREEN_H 172
 
 Arduino_DataBus *bus = new Arduino_ESP32SPI(
     LCD_DC, LCD_CS, LCD_SCLK, LCD_MOSI, GFX_NOT_DEFINED
 );
 
 Arduino_GFX *gfx = new Arduino_ST7789(
-    bus, LCD_RST, 0, true, SCREEN_W, SCREEN_H, 34, 0, 34, 0
+    bus, LCD_RST, 0, true, PANEL_W, PANEL_H, 34, 0, 34, 0
 );
 
-enum DisplayMode { MODE_RAIN, MODE_TEMP, MODE_XRP };
+enum DisplayMode { MODE_RAIN, MODE_TEMP };
 DisplayMode mode = MODE_RAIN;
 
-struct Stream {
+// Do not call this type Stream: Arduino already owns that class name.
+struct RainColumn {
   int16_t x;
   float y;
   float speed;
   uint8_t length;
 };
 
-constexpr int STREAM_COUNT = 22;
-Stream streams[STREAM_COUNT];
+constexpr int COLUMN_COUNT = 40;
+RainColumn columns[COLUMN_COUNT];
 int shownTemp = 0;
-float shownXrp = 0.0f;
 unsigned long autoRainAt = 0;
 unsigned long lastFrame = 0;
 String serialLine;
@@ -101,16 +99,16 @@ uint16_t matrixGreen(int brightness) {
   return gfx->color565(0, brightness, brightness / 10);
 }
 
-void resetStream(int i, bool anywhere = false) {
-  streams[i].x = random(1, SCREEN_W - 7);
-  streams[i].y = anywhere ? random(-SCREEN_H, SCREEN_H) : random(-120, -8);
-  streams[i].speed = random(12, 35) / 10.0f;
-  streams[i].length = random(5, 12);
+void resetColumn(int i, bool anywhere = false) {
+  columns[i].x = random(1, SCREEN_W - 7);
+  columns[i].y = anywhere ? random(-SCREEN_H, SCREEN_H) : random(-100, -8);
+  columns[i].speed = random(12, 38) / 10.0f;
+  columns[i].length = random(4, 11);
 }
 
 void initRain() {
   randomSeed(esp_random());
-  for (int i = 0; i < STREAM_COUNT; ++i) resetStream(i, true);
+  for (int i = 0; i < COLUMN_COUNT; ++i) resetColumn(i, true);
 }
 
 void drawRain() {
@@ -118,26 +116,28 @@ void drawRain() {
   gfx->setTextSize(1);
   gfx->setTextWrap(false);
 
-  for (int i = 0; i < STREAM_COUNT; ++i) {
-    Stream &s = streams[i];
-    for (int tail = 0; tail < s.length; ++tail) {
-      int y = (int)s.y - tail * 9;
+  for (int i = 0; i < COLUMN_COUNT; ++i) {
+    RainColumn &column = columns[i];
+
+    for (int tail = 0; tail < column.length; ++tail) {
+      int y = (int)column.y - tail * 9;
       if (y < -8 || y >= SCREEN_H) continue;
 
-      int brightness = 235 - tail * (190 / max(1, (int)s.length));
-      if (tail == 0) {
-        gfx->setTextColor(gfx->color565(190, 255, 205));
-      } else {
-        gfx->setTextColor(matrixGreen(brightness));
-      }
+      int divisor = max(1, (int)column.length);
+      int brightness = 235 - tail * (190 / divisor);
+      gfx->setTextColor(
+          tail == 0
+              ? gfx->color565(190, 255, 205)
+              : matrixGreen(brightness)
+      );
 
       char c = MATRIX_CHARS[random(0, sizeof(MATRIX_CHARS) - 1)];
-      gfx->setCursor(s.x, y);
-      gfx->write(c);
+      gfx->setCursor(column.x, y);
+      gfx->write((uint8_t)c);
     }
 
-    s.y += s.speed;
-    if (s.y - s.length * 9 > SCREEN_H + 10) resetStream(i);
+    column.y += column.speed;
+    if (column.y - column.length * 9 > SCREEN_H + 10) resetColumn(i);
   }
 }
 
@@ -145,7 +145,7 @@ void drawTemperature() {
   gfx->fillScreen(BLACK);
 
   String value = String(shownTemp);
-  uint8_t size = value.length() >= 3 ? 6 : 8;
+  uint8_t size = value.length() >= 3 ? 8 : 10;
   gfx->setTextSize(size);
   gfx->setTextWrap(false);
 
@@ -153,45 +153,28 @@ void drawTemperature() {
   uint16_t w, h;
   gfx->getTextBounds(value, 0, 0, &x1, &y1, &w, &h);
 
-  const int degreeSpace = 17;
-  int x = (SCREEN_W - (int)w - degreeSpace) / 2;
-  int y = (SCREEN_H - (int)h) / 2 - 5;
+  const int degreeSpace = 24;
+  int x = max(0, (SCREEN_W - (int)w - degreeSpace) / 2);
+  int y = max(0, (SCREEN_H - (int)h) / 2 - 4);
   int pulse = 185 + (int)(70.0f * fabsf(sinf(millis() / 280.0f)));
 
-  gfx->setTextColor(matrixGreen(55));
-  for (int dx = -3; dx <= 3; dx += 3) {
-    for (int dy = -3; dy <= 3; dy += 3) {
+  // Wide glow behind the digits.
+  gfx->setTextColor(matrixGreen(40));
+  for (int dx = -4; dx <= 4; dx += 2) {
+    for (int dy = -4; dy <= 4; dy += 2) {
       gfx->setCursor(x + dx, y + dy);
       gfx->print(value);
     }
   }
 
-  gfx->setTextColor(gfx->color565(185, 255, 200));
-  gfx->setCursor(x, y);
-  gfx->print(value);
-
-  int degreeX = x + w + 8;
-  int degreeY = y + 9;
-  gfx->drawCircle(degreeX, degreeY, 6, matrixGreen(pulse));
-  gfx->drawCircle(degreeX, degreeY, 5, gfx->color565(190, 255, 205));
-}
-
-void drawXrp() {
-  gfx->fillScreen(BLACK);
-  String value = "$" + String(shownXrp, shownXrp < 10.0f ? 4 : 2);
-  uint8_t size = value.length() <= 7 ? 3 : 2;
-  gfx->setTextSize(size);
-  gfx->setTextWrap(false);
-
-  int16_t x1, y1;
-  uint16_t w, h;
-  gfx->getTextBounds(value, 0, 0, &x1, &y1, &w, &h);
-  int x = max(0, (SCREEN_W - (int)w) / 2);
-  int y = (SCREEN_H - (int)h) / 2;
-
   gfx->setTextColor(gfx->color565(190, 255, 205));
   gfx->setCursor(x, y);
   gfx->print(value);
+
+  int degreeX = x + (int)w + 11;
+  int degreeY = y + 10;
+  gfx->drawCircle(degreeX, degreeY, 8, matrixGreen(pulse));
+  gfx->drawCircle(degreeX, degreeY, 7, gfx->color565(190, 255, 205));
 }
 
 void setRain() {
@@ -216,13 +199,6 @@ void handleCommand(String line) {
       mode = MODE_TEMP;
       autoRainAt = millis() + 12000UL;
     }
-    return;
-  }
-
-  if (line.startsWith("XRP|")) {
-    shownXrp = line.substring(4).toFloat();
-    mode = MODE_XRP;
-    autoRainAt = millis() + 12000UL;
   }
 }
 
@@ -234,6 +210,7 @@ void setup() {
   digitalWrite(LCD_BL, HIGH);
 
   gfx->begin(40000000);
+  gfx->setRotation(1);  // clockwise landscape
   gfx->fillScreen(BLACK);
   initRain();
   serialLine.reserve(96);
@@ -258,8 +235,7 @@ void loop() {
   if (millis() - lastFrame >= 34) {
     lastFrame = millis();
     if (mode == MODE_RAIN) drawRain();
-    else if (mode == MODE_TEMP) drawTemperature();
-    else drawXrp();
+    else drawTemperature();
   }
 
   delay(1);
@@ -313,14 +289,9 @@ def command_for(data):
     mode = str(data.get("mode", "rain")).lower()
     if mode == "temperature":
         value = data.get("temperature_f")
-        if value is None:
-            return b"RAIN\n"
-        source = str(data.get("source", "TEMP")).upper()
-        return f"TEMP|{source}|{int(round(float(value)))}\n".encode()
-    if mode == "xrp":
-        value = data.get("xrp")
         if value is not None:
-            return f"XRP|{float(value):.4f}\n".encode()
+            source = str(data.get("source", "TEMP")).upper()
+            return f"TEMP|{source}|{int(round(float(value)))}\n".encode()
     return b"RAIN\n"
 
 
@@ -330,7 +301,6 @@ def signature(data):
         data.get("mode"),
         data.get("source"),
         data.get("temperature_f"),
-        data.get("xrp"),
     )
 
 
@@ -413,7 +383,7 @@ sudo setfacl -m u:b:rw "$PORT" 2>/dev/null || true
 
 cd "$FIRMWARE"
 echo
-echo "Building ESP32 firmware..."
+echo "Building corrected ESP32 firmware..."
 "$VENV/bin/pio" run -t clean || true
 "$VENV/bin/pio" run
 
@@ -442,5 +412,5 @@ echo " ESP32 port    : $PORT"
 echo " Bridge status : $(systemctl is-active "$SERVICE" 2>/dev/null || true)"
 echo "=================================================="
 echo
-echo "The ESP32 now stays in Matrix rain. When the Pi forms OUTSIDE or INSIDE,"
-echo "the ESP32 shows only the matching temperature, then returns to rain."
+echo "The ESP32 now runs landscape Matrix rain. During an OUTSIDE or INSIDE"
+echo "Pi reveal, it shows only the matching temperature, then returns to rain."
