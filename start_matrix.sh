@@ -5,6 +5,8 @@ cd "$(dirname "$0")" || exit 1
 
 CHECK_SECONDS="${MATRIX_UPDATE_SECONDS:-20}"
 BRANCH="${MATRIX_UPDATE_BRANCH:-main}"
+BRIDGE_PID=""
+APP_PID=""
 
 if [[ -f config.env ]]; then
   set -a
@@ -19,11 +21,8 @@ force_sync() {
   remote_sha="$(git rev-parse "origin/$BRANCH" 2>/dev/null || true)"
   [[ -n "$remote_sha" ]] || return 1
 
-  # Force the Pi checkout to exactly match GitHub. This fixes dirty, detached,
-  # stale, or diverged local copies that caused old screens to stay running.
   git checkout -B "$BRANCH" "origin/$BRANCH" || return 1
   git reset --hard "origin/$BRANCH" || return 1
-  return 0
 }
 
 kill_legacy_matrix() {
@@ -35,27 +34,58 @@ kill_legacy_matrix() {
   pkill -f '^python3 /home/b/matrix-os-v8/v2_matrix.py$' 2>/dev/null || true
   pkill -f '^/usr/bin/python3 cinematic_director.py$' 2>/dev/null || true
   pkill -f '^python3 cinematic_director.py$' 2>/dev/null || true
+  pkill -f '^/usr/bin/python3 esp32_clock_bridge.py$' 2>/dev/null || true
+  pkill -f '^python3 esp32_clock_bridge.py$' 2>/dev/null || true
+}
+
+stop_children() {
+  if [[ -n "$APP_PID" ]]; then
+    kill "$APP_PID" 2>/dev/null || true
+    wait "$APP_PID" 2>/dev/null || true
+    APP_PID=""
+  fi
+  if [[ -n "$BRIDGE_PID" ]]; then
+    kill "$BRIDGE_PID" 2>/dev/null || true
+    wait "$BRIDGE_PID" 2>/dev/null || true
+    BRIDGE_PID=""
+  fi
+}
+
+trap 'stop_children' EXIT INT TERM
+
+start_bridge() {
+  /usr/bin/python3 esp32_clock_bridge.py &
+  BRIDGE_PID=$!
+  echo "[Matrix OS V10] ESP32 clock bridge PID $BRIDGE_PID on ${MATRIX_ESP32_PORT:-/dev/ttyACM0}"
 }
 
 force_sync || true
 kill_legacy_matrix
 
 while true; do
-  echo "[Matrix OS V10] starting commit $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  echo "[Matrix OS V10 — Hub Cut] starting commit $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+
+  start_bridge
   /usr/bin/python3 cinematic_director.py &
   APP_PID=$!
 
+  UPDATED=0
   while kill -0 "$APP_PID" 2>/dev/null; do
     sleep "$CHECK_SECONDS"
-    git fetch --quiet origin "$BRANCH" 2>/dev/null || continue
 
+    if [[ -n "$BRIDGE_PID" ]] && ! kill -0 "$BRIDGE_PID" 2>/dev/null; then
+      wait "$BRIDGE_PID" 2>/dev/null || true
+      start_bridge
+    fi
+
+    git fetch --quiet origin "$BRANCH" 2>/dev/null || continue
     LOCAL_SHA="$(git rev-parse HEAD 2>/dev/null || true)"
     REMOTE_SHA="$(git rev-parse "origin/$BRANCH" 2>/dev/null || true)"
 
     if [[ -n "$REMOTE_SHA" && "$LOCAL_SHA" != "$REMOTE_SHA" ]]; then
       echo "[Matrix OS V10] update detected: ${LOCAL_SHA:0:7} -> ${REMOTE_SHA:0:7}"
-      kill "$APP_PID" 2>/dev/null || true
-      wait "$APP_PID" 2>/dev/null || true
+      UPDATED=1
+      stop_children
       force_sync || true
       kill_legacy_matrix
       sleep 1
@@ -63,11 +93,11 @@ while true; do
     fi
   done
 
-  if kill -0 "$APP_PID" 2>/dev/null; then
+  if [[ "$UPDATED" -eq 1 ]]; then
     continue
   fi
 
-  wait "$APP_PID" 2>/dev/null || true
+  stop_children
   echo "[Matrix OS V10] cinematic_director.py stopped; restarting in 2 seconds"
   sleep 2
 done
