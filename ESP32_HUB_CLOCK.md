@@ -29,10 +29,12 @@ The Waveshare ESP32-S3 1.47-inch screen is a dedicated 320×172 landscape clock.
 
 ```bash
 cd /home/b/matrix-os-v8
-python3 -m pip install --user platformio
+sudo apt install -y python3-venv
 chmod +x flash_esp32_clock.sh
 ./flash_esp32_clock.sh
 ```
+
+The flash helper creates an isolated PlatformIO environment under `~/.local/share/matrix-os-v10/`. It does not install packages into the Pi's system Python.
 
 After flashing, `start_matrix.sh` launches `esp32_clock_bridge.py`. The bridge uses the Python standard library only and sends the Pi's local time to the ESP32 once per second.
 
