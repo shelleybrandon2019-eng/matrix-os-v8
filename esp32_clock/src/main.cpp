@@ -1,7 +1,6 @@
 #include <Arduino.h>
 #include <Arduino_GFX_Library.h>
 
-// Waveshare ESP32-S3 LCD 1.47-inch board used by Matrix OS.
 static constexpr int LCD_MOSI = 45;
 static constexpr int LCD_SCLK = 40;
 static constexpr int LCD_CS   = 42;
@@ -24,34 +23,22 @@ uint16_t C_DIM;
 uint16_t C_MID;
 uint16_t C_GREEN;
 uint16_t C_HEAD;
-uint16_t C_RED;
-uint16_t C_BLUE;
 
 struct ClockState {
-  int hour = 0;
+  int hour = 12;
   int minute = 0;
   int second = 0;
   String ampm = "--";
-  String date = "";
   bool synced = false;
-  uint32_t lastSync = 0;
+  uint32_t lastSyncMs = 0;
 } clockState;
 
-enum class Effect : uint8_t {
-  NONE,
-  MELT,
-  BULLET,
-  AGENT,
-  SCAN,
-  GLITCH,
-  BREACH,
-};
-
+enum class Effect : uint8_t { NONE, MELT, PHONE };
 Effect effect = Effect::NONE;
-uint32_t effectStarted = 0;
-uint32_t effectDuration = 0;
-uint32_t nextEventAt = 0;
-uint32_t lastFrame = 0;
+uint32_t effectStartedMs = 0;
+uint32_t effectDurationMs = 0;
+uint32_t nextEventMs = 0;
+uint32_t lastFrameMs = 0;
 String serialLine;
 
 static constexpr int DIGIT_W = 50;
@@ -62,16 +49,8 @@ static constexpr int DIGIT_X[4] = {8, 64, 143, 199};
 static constexpr int COLON_X = 126;
 
 const uint8_t DIGIT_MASKS[10] = {
-  0b1111110, // 0
-  0b0110000, // 1
-  0b1101101, // 2
-  0b1111001, // 3
-  0b0110011, // 4
-  0b1011011, // 5
-  0b1011111, // 6
-  0b1110000, // 7
-  0b1111111, // 8
-  0b1111011, // 9
+  0b1111110, 0b0110000, 0b1101101, 0b1111001, 0b0110011,
+  0b1011011, 0b1011111, 0b1110000, 0b1111111, 0b1111011,
 };
 
 uint32_t hash32(uint32_t value) {
@@ -89,249 +68,190 @@ int hashRange(uint32_t seed, int low, int high) {
 }
 
 void scheduleNextEvent() {
-  nextEventAt = millis() + static_cast<uint32_t>(random(20000, 60001));
-}
-
-uint16_t dimColor(uint8_t level) {
-  switch (level) {
-    case 0: return C_DIM;
-    case 1: return C_MID;
-    default: return C_GREEN;
-  }
+  nextEventMs = millis() + static_cast<uint32_t>(random(30000, 90001));
 }
 
 void drawPiece(int x, int y, int w, int h, uint16_t color,
-               uint32_t seed, float melt, int tearAmp) {
+               uint32_t seed, float melt = 0.0f) {
   if (melt > 0.001f) {
-    const int drop = hashRange(seed, 45, 155);
-    const int drift = hashRange(seed ^ 0xA53u, -24, 24);
+    const int drop = hashRange(seed, 35, 150);
+    const int drift = hashRange(seed ^ 0xA53u, -22, 22);
     y += static_cast<int>(drop * melt);
     x += static_cast<int>(drift * melt);
-    if (melt > 0.82f && (hash32(seed ^ millis() / 45) & 3u) == 0u) return;
-  }
-  if (tearAmp != 0) {
-    const int band = max(0, y / 13);
-    const int direction = ((band + static_cast<int>(millis() / 55)) & 1) ? 1 : -1;
-    x += direction * tearAmp * (1 + (band % 3));
+    if (melt > 0.80f && (hash32(seed ^ millis() / 45) & 3u) == 0u) return;
   }
   if (x + w < 0 || x >= SCREEN_W || y + h < 0 || y >= SCREEN_H) return;
   gfx->fillRect(x, y, w, h, color);
 }
 
 void drawSegmentPieces(int x, int y, int w, int h, bool horizontal,
-                       uint16_t color, uint32_t seed,
-                       float melt = 0.0f, int tearAmp = 0) {
+                       uint16_t color, uint32_t seed, float melt = 0.0f) {
   const int pieces = 6;
   if (horizontal) {
     const int pieceW = max(2, w / pieces);
     for (int i = 0; i < pieces; ++i) {
       const int px = x + i * pieceW;
       const int pw = (i == pieces - 1) ? (x + w - px) : pieceW - 1;
-      drawPiece(px, y, pw, h, color, seed + i * 97u, melt, tearAmp);
+      drawPiece(px, y, pw, h, color, seed + i * 97u, melt);
     }
   } else {
     const int pieceH = max(2, h / pieces);
     for (int i = 0; i < pieces; ++i) {
       const int py = y + i * pieceH;
       const int ph = (i == pieces - 1) ? (y + h - py) : pieceH - 1;
-      drawPiece(x, py, w, ph, color, seed + i * 131u, melt, tearAmp);
+      drawPiece(x, py, w, ph, color, seed + i * 131u, melt);
     }
   }
 }
 
 void drawDigit(int digit, int x, int y, uint16_t color,
-               uint32_t seed, float melt = 0.0f, int tearAmp = 0) {
+               uint32_t seed, float melt = 0.0f) {
   if (digit < 0 || digit > 9) return;
   const uint8_t mask = DIGIT_MASKS[digit];
   const int halfH = DIGIT_H / 2;
   const int horizontalW = DIGIT_W - SEG_T * 2;
   const int verticalH = halfH - SEG_T * 2;
 
-  // Segment order: A B C D E F G = bits 6..0.
-  if (mask & 0b1000000) drawSegmentPieces(x + SEG_T, y, horizontalW, SEG_T, true, color, seed + 1, melt, tearAmp);
-  if (mask & 0b0100000) drawSegmentPieces(x + DIGIT_W - SEG_T, y + SEG_T, SEG_T, verticalH, false, color, seed + 2, melt, tearAmp);
-  if (mask & 0b0010000) drawSegmentPieces(x + DIGIT_W - SEG_T, y + halfH + SEG_T / 2, SEG_T, verticalH, false, color, seed + 3, melt, tearAmp);
-  if (mask & 0b0001000) drawSegmentPieces(x + SEG_T, y + DIGIT_H - SEG_T, horizontalW, SEG_T, true, color, seed + 4, melt, tearAmp);
-  if (mask & 0b0000100) drawSegmentPieces(x, y + halfH + SEG_T / 2, SEG_T, verticalH, false, color, seed + 5, melt, tearAmp);
-  if (mask & 0b0000010) drawSegmentPieces(x, y + SEG_T, SEG_T, verticalH, false, color, seed + 6, melt, tearAmp);
-  if (mask & 0b0000001) drawSegmentPieces(x + SEG_T, y + halfH - SEG_T / 2, horizontalW, SEG_T, true, color, seed + 7, melt, tearAmp);
+  if (mask & 0b1000000) drawSegmentPieces(x + SEG_T, y, horizontalW, SEG_T, true, color, seed + 1, melt);
+  if (mask & 0b0100000) drawSegmentPieces(x + DIGIT_W - SEG_T, y + SEG_T, SEG_T, verticalH, false, color, seed + 2, melt);
+  if (mask & 0b0010000) drawSegmentPieces(x + DIGIT_W - SEG_T, y + halfH + SEG_T / 2, SEG_T, verticalH, false, color, seed + 3, melt);
+  if (mask & 0b0001000) drawSegmentPieces(x + SEG_T, y + DIGIT_H - SEG_T, horizontalW, SEG_T, true, color, seed + 4, melt);
+  if (mask & 0b0000100) drawSegmentPieces(x, y + halfH + SEG_T / 2, SEG_T, verticalH, false, color, seed + 5, melt);
+  if (mask & 0b0000010) drawSegmentPieces(x, y + SEG_T, SEG_T, verticalH, false, color, seed + 6, melt);
+  if (mask & 0b0000001) drawSegmentPieces(x + SEG_T, y + halfH - SEG_T / 2, horizontalW, SEG_T, true, color, seed + 7, melt);
 }
 
-void drawColon(uint16_t color, float melt = 0.0f, int tearAmp = 0) {
-  drawPiece(COLON_X, DIGIT_Y + 37, 10, 10, color, 7001, melt, tearAmp);
-  drawPiece(COLON_X, DIGIT_Y + 78, 10, 10, color, 7002, melt, tearAmp);
-}
-
-void drawLabels(uint16_t color, bool showSeconds = true) {
-  gfx->setTextColor(color);
-  gfx->setTextSize(2);
-  gfx->setCursor(270, 112);
-  gfx->print(clockState.ampm);
-  if (showSeconds) {
-    char seconds[4];
-    snprintf(seconds, sizeof(seconds), "%02d", clockState.second);
-    gfx->setCursor(273, 82);
-    gfx->print(seconds);
-  }
-}
-
-void drawClockCore(uint16_t color, float melt = 0.0f, int tearAmp = 0,
-                   int xOffset = 0, bool labels = true) {
+void drawClockCore(uint16_t color, float melt = 0.0f) {
   const int h = clockState.synced ? clockState.hour : 0;
   const int m = clockState.synced ? clockState.minute : 0;
   int digits[4] = {h / 10, h % 10, m / 10, m % 10};
   if (!clockState.synced) digits[0] = digits[1] = digits[2] = digits[3] = 8;
 
   for (int i = 0; i < 4; ++i) {
-    drawDigit(digits[i], DIGIT_X[i] + xOffset, DIGIT_Y, color,
-              1000u + i * 100u, melt, tearAmp);
+    if (i == 0 && digits[i] == 0) continue;
+    drawDigit(digits[i], DIGIT_X[i], DIGIT_Y, color, 1000u + i * 100u, melt);
   }
-  drawColon(color, melt, tearAmp);
-  if (labels) drawLabels(color);
+
+  drawPiece(COLON_X, DIGIT_Y + 37, 10, 10, color, 7001, melt);
+  drawPiece(COLON_X, DIGIT_Y + 78, 10, 10, color, 7002, melt);
+
+  gfx->setTextColor(color);
+  gfx->setTextSize(2);
+  gfx->setCursor(270, 112);
+  gfx->print(clockState.ampm);
+
+  char seconds[4];
+  snprintf(seconds, sizeof(seconds), "%02d", clockState.second);
+  gfx->setCursor(273, 82);
+  gfx->print(seconds);
 }
 
 void drawNormalClock() {
   drawClockCore(C_GREEN);
   if (!clockState.synced) {
-    gfx->setTextColor(C_RED);
-    gfx->setTextSize(2);
-    gfx->setCursor(268, 142);
-    gfx->print("LINK");
+    gfx->setTextColor(C_DIM);
+    gfx->setTextSize(1);
+    gfx->setCursor(270, 147);
+    gfx->print("WAIT");
   }
 }
 
 void drawMelt(float p) {
-  const float melt = (p < 0.52f) ? (p / 0.52f) : ((1.0f - p) / 0.48f);
-  drawClockCore(melt > 0.70f ? C_MID : C_GREEN, constrain(melt, 0.0f, 1.0f));
-  if (p > 0.45f && p < 0.70f) {
+  float melt;
+  if (p < 0.48f) melt = p / 0.48f;
+  else melt = (1.0f - p) / 0.52f;
+  melt = constrain(melt, 0.0f, 1.0f);
+  drawClockCore(melt > 0.70f ? C_MID : C_GREEN, melt);
+  if (p > 0.42f && p < 0.68f) {
     gfx->setTextColor(C_DIM);
     gfx->setTextSize(1);
-    gfx->setCursor(130, 160);
+    gfx->setCursor(126, 160);
     gfx->print("REFORMING");
   }
 }
 
-void drawBullet(float p) {
-  const float wave = sinf(p * PI);
-  drawClockCore(C_DIM, 0.0f, 0, -18, false);
-  drawClockCore(C_MID, 0.0f, 0, -9, false);
-  drawClockCore(C_GREEN, 0.0f, 0, static_cast<int>(wave * 7), true);
-  const int scanX = static_cast<int>(p * SCREEN_W);
-  gfx->drawFastVLine(scanX, 0, SCREEN_H, C_HEAD);
+void drawPhoneIcon(int cx, int cy, float glow) {
+  const uint16_t color = glow > 0.6f ? C_HEAD : C_GREEN;
+  gfx->drawCircle(cx, cy, 29, color);
+  gfx->drawCircle(cx, cy, 28, C_MID);
+  gfx->drawArc(cx, cy, 24, 18, 215, 325, color);
+  gfx->fillCircle(cx - 18, cy + 13, 5, color);
+  gfx->fillCircle(cx + 18, cy + 13, 5, color);
+  gfx->drawLine(cx - 17, cy + 9, cx - 8, cy - 3, color);
+  gfx->drawLine(cx + 17, cy + 9, cx + 8, cy - 3, color);
+}
+
+void drawPhoneTrace(float p) {
+  const float pulse = 0.5f + 0.5f * sinf(p * PI * 8.0f);
+  const int cx = 72;
+  const int cy = 76;
+  drawPhoneIcon(cx, cy, pulse);
+
+  for (int ring = 0; ring < 4; ++ring) {
+    const int radius = 38 + ring * 10 + static_cast<int>(p * 8.0f);
+    const uint16_t color = ring < 2 ? C_MID : C_DIM;
+    gfx->drawCircle(cx, cy, radius, color);
+  }
+
+  const int traceStart = 115;
+  const int traceEnd = 305;
+  const int traceX = traceStart + static_cast<int>((traceEnd - traceStart) * p);
+  gfx->drawFastHLine(traceStart, 77, max(1, traceX - traceStart), C_GREEN);
+  gfx->drawFastVLine(traceX, 20, 115, C_HEAD);
+
+  for (int i = 0; i < 12; ++i) {
+    const int x = traceStart + i * 16;
+    const int h = hashRange(i * 73u + millis() / 80u, 6, 42);
+    gfx->drawFastVLine(x, 77 - h / 2, h, (i % 3 == 0) ? C_GREEN : C_DIM);
+  }
+
   gfx->setTextColor(C_HEAD);
-  gfx->setTextSize(1);
-  gfx->setCursor(4, 158);
-  gfx->print("BULLET TIME");
-}
-
-void drawAgentFigure(int x, int y, bool scanning) {
-  gfx->fillCircle(x, y, 11, C_BLACK);
-  gfx->drawCircle(x, y, 11, C_GREEN);
-  gfx->fillRect(x - 10, y + 10, 20, 34, C_BLACK);
-  gfx->drawRect(x - 10, y + 10, 20, 34, C_GREEN);
-  gfx->drawLine(x - 8, y + 44, x - 16, y + 64, C_GREEN);
-  gfx->drawLine(x + 8, y + 44, x + 16, y + 64, C_GREEN);
-  gfx->drawLine(x - 10, y + 18, x - 24, y + 34, C_GREEN);
-  gfx->drawLine(x + 10, y + 18, x + 24, y + 34, C_GREEN);
-  gfx->drawFastHLine(x - 8, y - 2, 6, C_HEAD);
-  gfx->drawFastHLine(x + 2, y - 2, 6, C_HEAD);
-  if (scanning) {
-    for (int i = 0; i < 4; ++i) {
-      gfx->drawLine(x + 11, y, x + 55, y - 24 + i * 16, dimColor(i > 1 ? 1 : 0));
-    }
-  }
-}
-
-void drawAgent(float p, bool scanOnly) {
-  drawClockCore(C_DIM);
-  int x;
-  if (scanOnly) {
-    x = 240;
-  } else {
-    x = static_cast<int>(-35 + p * (SCREEN_W + 70));
-  }
-  const bool scanning = scanOnly || p > 0.58f;
-  drawAgentFigure(x, 61, scanning);
-  gfx->setTextColor(C_MID);
-  gfx->setTextSize(1);
-  gfx->setCursor(5, 160);
-  gfx->print(scanning ? "AGENT SCAN" : "AGENT MOVEMENT");
-}
-
-void drawGlitch(float p) {
-  const float envelope = sinf(p * PI);
-  const int amp = max(1, static_cast<int>(envelope * 7));
-  drawClockCore(C_GREEN, 0.0f, amp);
-  if ((millis() / 70) & 1u) {
-    const int y = random(10, 160);
-    gfx->drawFastHLine(0, y, SCREEN_W, C_HEAD);
-  }
-}
-
-void drawBreach(float p) {
-  const float envelope = sinf(p * PI);
-  const int amp = static_cast<int>(envelope * 9);
-  drawClockCore(p < 0.72f ? C_RED : C_GREEN, 0.0f, amp);
-  for (int i = 0; i < 5; ++i) {
-    const int y = 18 + i * 31 + ((millis() / 50 + i * 9) % 13);
-    gfx->drawFastHLine(0, y, SCREEN_W, (i & 1) ? C_RED : C_MID);
-  }
-  gfx->setTextColor(C_RED);
   gfx->setTextSize(2);
-  gfx->setCursor(76, 148);
-  gfx->print("SIGNAL BREACH");
+  gfx->setCursor(128, 25);
+  gfx->print("CALL TRACE");
+
+  gfx->setTextColor(C_GREEN);
+  gfx->setTextSize(1);
+  gfx->setCursor(128, 112);
+  gfx->print(p < 0.45f ? "DIALING..." : (p < 0.82f ? "LOCATING SIGNAL" : "CONNECTED"));
+
+  char number[18];
+  snprintf(number, sizeof(number), "555-%03d-%04d",
+           hashRange(991u, 100, 999), hashRange(1771u, 0, 9999));
+  gfx->setTextColor(C_MID);
+  gfx->setCursor(128, 132);
+  gfx->print(number);
 }
 
 void startEffect(Effect next) {
   effect = next;
-  effectStarted = millis();
-  switch (effect) {
-    case Effect::MELT:   effectDuration = 2200; break;
-    case Effect::BULLET: effectDuration = 1850; break;
-    case Effect::AGENT:  effectDuration = 2200; break;
-    case Effect::SCAN:   effectDuration = 1900; break;
-    case Effect::GLITCH: effectDuration = 1450; break;
-    case Effect::BREACH: effectDuration = 2050; break;
-    default: effectDuration = 0; break;
-  }
+  effectStartedMs = millis();
+  effectDurationMs = (effect == Effect::MELT) ? 2300 : 2800;
 }
 
-Effect parseEffect(String name) {
-  name.trim();
-  name.toUpperCase();
-  if (name == "MELT") return Effect::MELT;
-  if (name == "BULLET") return Effect::BULLET;
-  if (name == "AGENT") return Effect::AGENT;
-  if (name == "SCAN") return Effect::SCAN;
-  if (name == "GLITCH") return Effect::GLITCH;
-  if (name == "BREACH") return Effect::BREACH;
-  return Effect::NONE;
-}
-
-void parseTime(String line) {
-  // TIME|HH|MM|SS|AM|YYYY-MM-DD
-  int fields[5];
+void parseTime(const String &line) {
+  int bars[5];
   int found = 0;
   for (int i = 0; i < static_cast<int>(line.length()) && found < 5; ++i) {
-    if (line[i] == '|') fields[found++] = i;
+    if (line[i] == '|') bars[found++] = i;
   }
   if (found < 5) return;
-  clockState.hour = line.substring(fields[0] + 1, fields[1]).toInt();
-  clockState.minute = line.substring(fields[1] + 1, fields[2]).toInt();
-  clockState.second = line.substring(fields[2] + 1, fields[3]).toInt();
-  clockState.ampm = line.substring(fields[3] + 1, fields[4]);
-  clockState.date = line.substring(fields[4] + 1);
+  clockState.hour = line.substring(bars[0] + 1, bars[1]).toInt();
+  clockState.minute = line.substring(bars[1] + 1, bars[2]).toInt();
+  clockState.second = line.substring(bars[2] + 1, bars[3]).toInt();
+  clockState.ampm = line.substring(bars[3] + 1, bars[4]);
   clockState.synced = true;
-  clockState.lastSync = millis();
+  clockState.lastSyncMs = millis();
 }
 
 void handleCommand(String line) {
   line.trim();
   if (line.startsWith("TIME|")) {
     parseTime(line);
-  } else if (line.startsWith("EVENT|")) {
-    const Effect requested = parseEffect(line.substring(6));
-    if (requested != Effect::NONE) startEffect(requested);
+  } else if (line == "EVENT|MELT") {
+    startEffect(Effect::MELT);
+  } else if (line == "EVENT|PHONE") {
+    startEffect(Effect::PHONE);
   } else if (line.startsWith("HELLO|")) {
     Serial.println("READY|ESP32_HUB_CLOCK_V10");
   } else if (line == "PING") {
@@ -358,17 +278,11 @@ void render() {
     return;
   }
   const float p = constrain(
-      static_cast<float>(millis() - effectStarted) / (effectDuration ? effectDuration : 1u),
+      static_cast<float>(millis() - effectStartedMs) /
+          static_cast<float>(effectDurationMs ? effectDurationMs : 1u),
       0.0f, 1.0f);
-  switch (effect) {
-    case Effect::MELT: drawMelt(p); break;
-    case Effect::BULLET: drawBullet(p); break;
-    case Effect::AGENT: drawAgent(p, false); break;
-    case Effect::SCAN: drawAgent(p, true); break;
-    case Effect::GLITCH: drawGlitch(p); break;
-    case Effect::BREACH: drawBreach(p); break;
-    default: drawNormalClock(); break;
-  }
+  if (effect == Effect::MELT) drawMelt(p);
+  else drawPhoneTrace(p);
 }
 
 void setup() {
@@ -379,7 +293,7 @@ void setup() {
   randomSeed(esp_random());
 
   gfx->begin(40000000);
-  gfx->setRotation(1); // 320x172 landscape, clockwise.
+  gfx->setRotation(1);
   gfx->setTextWrap(false);
 
   C_BLACK = gfx->color565(0, 0, 0);
@@ -387,8 +301,6 @@ void setup() {
   C_MID   = gfx->color565(0, 125, 38);
   C_GREEN = gfx->color565(0, 255, 70);
   C_HEAD  = gfx->color565(205, 255, 218);
-  C_RED   = gfx->color565(255, 42, 32);
-  C_BLUE  = gfx->color565(35, 125, 255);
 
   gfx->fillScreen(C_BLACK);
   scheduleNextEvent();
@@ -398,23 +310,17 @@ void setup() {
 void loop() {
   pollSerial();
 
-  if (effect != Effect::NONE && millis() - effectStarted >= effectDuration) {
+  if (effect != Effect::NONE && millis() - effectStartedMs >= effectDurationMs) {
     effect = Effect::NONE;
     scheduleNextEvent();
   }
 
-  if (effect == Effect::NONE && clockState.synced && millis() >= nextEventAt) {
-    const int choice = random(0, 6);
-    startEffect(static_cast<Effect>(choice + 1));
+  if (effect == Effect::NONE && clockState.synced && millis() >= nextEventMs) {
+    startEffect(random(0, 100) < 62 ? Effect::MELT : Effect::PHONE);
   }
 
-  // Mark the link stale after 90 seconds, but keep the last known time visible.
-  if (clockState.synced && millis() - clockState.lastSync > 90000) {
-    clockState.ampm = "LK";
-  }
-
-  if (millis() - lastFrame >= 33) {
-    lastFrame = millis();
+  if (millis() - lastFrameMs >= 33) {
+    lastFrameMs = millis();
     render();
   }
   delay(1);
