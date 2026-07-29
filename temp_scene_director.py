@@ -108,7 +108,7 @@ class Dashboard:
         rows = (
             ("Outside", self.data.outside_f),
             ("Inside", self.data.inside_f),
-            ("4 Seasons", self.data.front_room_f),
+            ("Front Room", self.data.front_room_f),
             ("Bedroom", self.data.bedroom_f),
         )
 
