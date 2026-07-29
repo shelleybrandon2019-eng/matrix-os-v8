@@ -32,22 +32,24 @@ force_sync() {
   git reset --hard "origin/$BRANCH" || return 1
 }
 
-kill_legacy_matrix() {
-  pkill -f '/home/b/v2_matrix.py' 2>/dev/null || true
-  pkill -f '/home/b/matrix_time_glitch.py' 2>/dev/null || true
-  pkill -f 'cinematic_director.py' 2>/dev/null || true
-  pkill -f 'main.py' 2>/dev/null || true
-  pkill -f 'esp32_clock_bridge.py' 2>/dev/null || true
+kill_old_displays() {
+  # SIGKILL is intentional: a process suspended with Ctrl+Z will not handle SIGTERM.
+  pkill -KILL -f '/home/b/v2_matrix.py' 2>/dev/null || true
+  pkill -KILL -f '/home/b/matrix_time_glitch.py' 2>/dev/null || true
+  pkill -KILL -f 'cinematic_director.py' 2>/dev/null || true
+  pkill -KILL -f 'temp_scene_director.py' 2>/dev/null || true
+  pkill -KILL -f 'esp32_clock_bridge.py' 2>/dev/null || true
+  pkill -KILL -f '/home/b/matrix-os-v8/main.py' 2>/dev/null || true
 }
 
 stop_children() {
   if [[ -n "$APP_PID" ]]; then
-    kill "$APP_PID" 2>/dev/null || true
+    kill -KILL "$APP_PID" 2>/dev/null || true
     wait "$APP_PID" 2>/dev/null || true
     APP_PID=""
   fi
   if [[ -n "$BRIDGE_PID" ]]; then
-    kill "$BRIDGE_PID" 2>/dev/null || true
+    kill -KILL "$BRIDGE_PID" 2>/dev/null || true
     wait "$BRIDGE_PID" 2>/dev/null || true
     BRIDGE_PID=""
   fi
@@ -67,7 +69,7 @@ start_bridge_if_present() {
 }
 
 force_sync || true
-kill_legacy_matrix
+kill_old_displays
 
 while true; do
   echo "[Matrix OS] dashboard, commit $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
@@ -95,7 +97,7 @@ while true; do
       UPDATED=1
       stop_children
       force_sync || true
-      kill_legacy_matrix
+      kill_old_displays
       sleep 1
       break
     fi
