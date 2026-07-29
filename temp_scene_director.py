@@ -48,7 +48,7 @@ class Dashboard:
 
     @staticmethod
     def temperature_text(value: Optional[float]) -> str:
-        return "--°F" if value is None else f"{value:.0f}°F"
+        return "--.-°F" if value is None else f"{value:.1f}°F"
 
     def draw_centered(self, text: str, font: pygame.font.Font, color, y: int) -> pygame.Rect:
         shadow = font.render(text, True, (0, 35, 12))
