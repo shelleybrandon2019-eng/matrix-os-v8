@@ -18,8 +18,6 @@ HEIGHT = 320
 VP_X = WIDTH // 2
 VP_Y = int(HEIGHT * 0.50)
 
-# Matrix rain only: half-width Japanese/Katakana glyphs, numbers, and symbols.
-# Intentionally no A-Z/a-z characters.
 MATRIX_CHARS = (
     "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ"
     "ｦｧｨｩｪｫｬｭｮｯｰﾞﾟ"
@@ -59,34 +57,37 @@ class CodeColumn:
     layer: int
 
     def recycle(self, *, full_height: bool = False) -> None:
+        # Keep recycled streams close enough to the screen that their long tails
+        # immediately remain visible. This removes the empty black lanes that can
+        # happen when a whole stream respawns far above the display.
         self.y = (
-            random.uniform(-HEIGHT * 0.18, HEIGHT * 1.18)
+            random.uniform(-HEIGHT * 0.10, HEIGHT * 1.15)
             if full_height
-            else random.uniform(-HEIGHT * 1.75, -8)
+            else random.uniform(-HEIGHT * 0.48, -6)
         )
-        self.speed = random.uniform(58.0, 168.0)
-        self.length = random.randint(28, 54)
-        self.brightness = random.uniform(0.76, 1.16)
-        self.mutation = random.uniform(1.5, 4.6)
-        self.hot = random.random() < 0.38
+        self.speed = random.uniform(54.0, 156.0)
+        self.length = random.randint(38, 68)
+        self.brightness = random.uniform(0.88, 1.24)
+        self.mutation = random.uniform(1.7, 4.9)
+        self.hot = random.random() < 0.42
         self.glyphs = [random.choice(MATRIX_CHARS) for _ in range(self.length)]
 
 
 class DashboardRain:
-    """Very dense vertical Matrix rain whose luminance reveals a 3D code world."""
+    """Continuously packed vertical Matrix rain with Neo code-world depth."""
 
     FONT_SIZES = (6, 7, 8, 10)
     PALETTE = (
-        (0, 28, 8),
-        (0, 43, 11),
-        (0, 62, 16),
-        (0, 88, 22),
-        (0, 120, 29),
-        (0, 160, 37),
-        (0, 207, 48),
-        (0, 255, 68),
+        (0, 34, 9),
+        (0, 49, 12),
+        (0, 70, 17),
+        (0, 96, 23),
+        (0, 130, 30),
+        (0, 170, 39),
+        (0, 214, 50),
+        (0, 255, 70),
     )
-    HEAD = (225, 255, 230)
+    HEAD = (230, 255, 234)
 
     INNER_LEFT = 178
     INNER_RIGHT = 302
@@ -104,13 +105,12 @@ class DashboardRain:
         self.geometry = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         self.time = 0.0
 
-        # Four staggered layers. The first two are intentionally very tight so
-        # the 480x320 panel reads as a wall of Matrix code rather than sparse rain.
+        # Tighter than before: roughly 245 overlapping streams across a 480px panel.
         layer_specs = (
-            (6, 6, 0.50, 0.62),
-            (7, 8, 0.66, 0.76),
-            (8, 11, 0.84, 0.92),
-            (10, 17, 1.00, 1.02),
+            (6, 5, 0.48, 0.70),
+            (7, 7, 0.64, 0.84),
+            (8, 10, 0.82, 0.98),
+            (10, 15, 1.00, 1.08),
         )
         for layer, (font_size, x_spacing, speed_mul, bright_mul) in enumerate(layer_specs):
             font = self.fonts[font_size]
@@ -121,12 +121,12 @@ class DashboardRain:
                     x=x,
                     y=0.0,
                     speed=100.0,
-                    length=36,
+                    length=48,
                     spacing=y_spacing,
                     font_size=font_size,
                     glyphs=[],
                     brightness=1.0,
-                    mutation=2.5,
+                    mutation=2.8,
                     hot=False,
                     layer=layer,
                 )
@@ -176,52 +176,44 @@ class DashboardRain:
             self.INNER_LEFT < x < self.INNER_RIGHT
             and self.INNER_TOP < y < self.INNER_BOTTOM
         )
-
-        # The distant opening stays darker, but never turns into a large empty hole.
-        gain = 0.72 if inside_back else 1.05
+        # Keep depth, but never let the middle turn into an empty black hole.
+        gain = 0.82 if inside_back else 1.08
 
         nearest = min(self._distance_to_segment(x, y, a, b) for a, b in self._edges)
         if nearest < 2.4:
-            gain += 1.30
+            gain += 1.26
         elif nearest < 5.5:
-            gain += 0.80
+            gain += 0.78
         elif nearest < 11.0:
-            gain += 0.34
+            gain += 0.32
 
         if not inside_back:
             dx = abs(x - VP_X) / max(1.0, WIDTH / 2)
             dy = abs(y - VP_Y) / max(1.0, HEIGHT / 2)
-            gain += 0.15 * (dx + dy)
-            gain += 0.11 * (0.5 + 0.5 * math.sin((x * 0.048) + (y * 0.034)))
+            gain += 0.14 * (dx + dy)
+            gain += 0.10 * (0.5 + 0.5 * math.sin((x * 0.048) + (y * 0.034)))
 
-        return max(0.40, min(2.50, gain))
+        return max(0.52, min(2.45, gain))
 
     def update(self, dt: float, energy: float = 0.0) -> None:
         self.time += dt
         boost = 1.0 + max(0.0, min(1.0, energy)) * 0.22
+        multipliers = ((0.48, 0.70), (0.64, 0.84), (0.82, 0.98), (1.00, 1.08))
         for col in self.columns:
             col.y += col.speed * boost * dt
             if col.glyphs and random.random() < dt * col.mutation:
-                changes = 2 if random.random() < 0.32 else 1
+                changes = 2 if random.random() < 0.36 else 1
                 for _ in range(changes):
                     col.glyphs[random.randrange(len(col.glyphs))] = random.choice(MATRIX_CHARS)
             if col.y - col.length * col.spacing > HEIGHT + col.spacing:
                 col.recycle()
-                if col.layer == 0:
-                    col.speed *= 0.50
-                    col.brightness *= 0.62
-                elif col.layer == 1:
-                    col.speed *= 0.66
-                    col.brightness *= 0.76
-                elif col.layer == 2:
-                    col.speed *= 0.84
-                    col.brightness *= 0.92
-                else:
-                    col.brightness *= 1.02
+                speed_mul, bright_mul = multipliers[col.layer]
+                col.speed *= speed_mul
+                col.brightness *= bright_mul
 
     def _draw_geometry_glow(self) -> None:
         self.geometry.fill((0, 0, 0, 0))
-        pulse = int(12 + 8 * (0.5 + 0.5 * math.sin(self.time * 1.1)))
+        pulse = int(10 + 7 * (0.5 + 0.5 * math.sin(self.time * 1.1)))
         for a, b in self._edges:
             pygame.draw.line(self.geometry, (0, 125, 38, pulse), a, b, 1)
 
@@ -230,7 +222,7 @@ class DashboardRain:
         self.glow.fill((0, 0, 0, 0))
         self._draw_geometry_glow()
 
-        energy_gain = 1.0 + max(0.0, min(1.0, energy)) * 0.20
+        energy_gain = 1.0 + max(0.0, min(1.0, energy)) * 0.22
 
         for col in self.columns:
             for index, glyph in enumerate(col.glyphs):
@@ -238,19 +230,19 @@ class DashboardRain:
                 if y < -col.spacing or y > HEIGHT:
                     continue
 
-                # Long bright tails keep nearly every vertical lane populated.
                 position = index / max(1, col.length - 1)
-                trail = max(0.14, (1.0 - position) ** 0.86)
+                # A much higher minimum tail brightness is what makes the image
+                # read as a solid code-world instead of isolated falling strings.
+                trail = max(0.23, (1.0 - position) ** 0.78)
                 scene = self._scene_gain(col.x, y)
                 value = trail * col.brightness * scene * energy_gain
                 level = max(0, min(7, int(value * 7.9)))
 
                 near_edge = scene > 1.42
-                is_head = index == 0 and col.hot and (near_edge or random.random() < 0.40)
-
+                is_head = index == 0 and col.hot and (near_edge or random.random() < 0.44)
                 if is_head:
                     halo = self._image(col.font_size, glyph, 7, False)
-                    halo.set_alpha(96)
+                    halo.set_alpha(100)
                     self.glow.blit(halo, (col.x - 1, y))
                     self.glow.blit(halo, (col.x + 1, y))
                     self.glow.blit(halo, (col.x, y - 1))
@@ -261,9 +253,8 @@ class DashboardRain:
                     (col.x, y),
                 )
 
-        # Frequent pale-green flashes create the fuller Neo code-vision sparkle.
-        for _ in range(4):
-            if random.random() < 0.48:
+        for _ in range(6):
+            if random.random() < 0.52:
                 a, b = random.choice(self._edges)
                 t = random.random()
                 x = int(a[0] + (b[0] - a[0]) * t)
@@ -272,11 +263,11 @@ class DashboardRain:
                 size = random.choice((7, 8, 10))
                 self.glow.blit(self._image(size, glyph, 7, True), (x, y))
 
-        self.geometry.set_alpha(95)
+        self.geometry.set_alpha(80)
         destination.blit(self.geometry, (0, 0))
         self.geometry.set_alpha(255)
 
-        self.glow.set_alpha(96)
+        self.glow.set_alpha(102)
         destination.blit(self.glow, (0, 0))
         self.glow.set_alpha(255)
         destination.blit(self.surface, (0, 0))
