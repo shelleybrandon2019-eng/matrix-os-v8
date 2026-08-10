@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dense, readable Matrix rain tuned for the 480x320 dashboard."""
+"""Animated Matrix-code perspective tunnel for the 480x320 dashboard."""
 from __future__ import annotations
 
 import random
@@ -10,6 +10,9 @@ import pygame
 
 WIDTH = 480
 HEIGHT = 320
+VP_X = WIDTH // 2
+VP_Y = int(HEIGHT * 0.47)
+
 # Matrix rain only: half-width Japanese/Katakana glyphs, numbers, and symbols.
 # Intentionally no A-Z/a-z characters.
 MATRIX_CHARS = (
@@ -37,166 +40,178 @@ def _matrix_font(size: int) -> pygame.font.Font:
 
 
 @dataclass
-class Stream:
-    x: int
-    y: float
+class TunnelStream:
+    end_x: float
+    end_y: float
+    phase: float
     speed: float
-    length: int
-    spacing: int
-    depth: int
-    font_size: int
     glyphs: List[str]
     mutation: float
-    phase: float
-
-    def recycle(self, *, full_height: bool = False) -> None:
-        if full_height:
-            self.y = random.uniform(-HEIGHT * 0.2, HEIGHT * 1.05)
-        else:
-            self.y = random.uniform(-HEIGHT * 1.35, -10)
-
-        if self.depth == 0:
-            self.speed = random.uniform(34.0, 72.0)
-            self.length = random.randint(15, 30)
-            self.mutation = random.uniform(0.7, 1.5)
-        elif self.depth == 1:
-            self.speed = random.uniform(68.0, 126.0)
-            self.length = random.randint(12, 25)
-            self.mutation = random.uniform(1.2, 2.5)
-        else:
-            self.speed = random.uniform(110.0, 190.0)
-            self.length = random.randint(9, 19)
-            self.mutation = random.uniform(2.0, 4.0)
-
-        self.glyphs = [random.choice(MATRIX_CHARS) for _ in range(self.length)]
-        self.phase = random.random() * 10.0
+    hot: bool
 
 
 class DashboardRain:
-    """Three-depth code rain with bright heads, long readable trails and dense coverage."""
+    """Dense code tunnel that appears to rush outward from a central vanishing point."""
 
-    # depth, font size, x spacing
-    LAYERS = (
-        (0, 8, 12),
-        (1, 10, 16),
-        (2, 12, 23),
+    FONT_SIZES = (6, 7, 8, 9, 10, 11, 12, 13, 14)
+    GLYPHS_PER_RAY = 14
+
+    PALETTE = (
+        (0, 22, 7),
+        (0, 34, 10),
+        (0, 48, 13),
+        (0, 68, 18),
+        (0, 92, 23),
+        (0, 124, 30),
+        (0, 164, 38),
+        (0, 215, 50),
     )
 
-    # Eight trail intensities for each depth. These are deliberately brighter
-    # than the cinematic scene engine because the dashboard has text drawn over it.
-    PALETTES = {
-        0: (
-            (0, 15, 5), (0, 23, 7), (0, 31, 9), (0, 40, 11),
-            (0, 50, 14), (0, 62, 17), (0, 76, 20), (0, 92, 24),
-        ),
-        1: (
-            (0, 23, 7), (0, 34, 10), (0, 48, 13), (0, 66, 17),
-            (0, 88, 22), (0, 115, 28), (0, 148, 35), (0, 185, 43),
-        ),
-        2: (
-            (0, 31, 9), (0, 48, 13), (0, 70, 18), (0, 96, 23),
-            (0, 126, 29), (0, 162, 36), (0, 205, 45), (0, 245, 58),
-        ),
-    }
-
-    HEADS = {
-        0: (35, 125, 55),
-        1: (95, 240, 125),
-        2: (215, 255, 220),
-    }
-
     def __init__(self) -> None:
-        self.streams: List[Stream] = []
-        self.fonts: Dict[int, pygame.font.Font] = {}
+        self.streams: List[TunnelStream] = []
+        self.fonts: Dict[int, pygame.font.Font] = {
+            size: _matrix_font(size) for size in self.FONT_SIZES
+        }
         self.cache: Dict[Tuple[int, str, int, bool], pygame.Surface] = {}
         self.surface = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         self.glow = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        self.lines = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        self.time = 0.0
 
-        for depth, font_size, x_spacing in self.LAYERS:
-            font = _matrix_font(font_size)
-            self.fonts[font_size] = font
-            y_spacing = max(font_size + 1, font.get_linesize() - 1)
-            # Stagger layers so they do not stack on the same vertical grid.
-            offset = random.randint(0, max(1, x_spacing - 1))
-            for x in range(-x_spacing + offset, WIDTH + x_spacing, x_spacing):
-                stream = Stream(
-                    x=x,
-                    y=0.0,
-                    speed=80.0,
-                    length=15,
-                    spacing=y_spacing,
-                    depth=depth,
-                    font_size=font_size,
-                    glyphs=[],
-                    mutation=1.0,
-                    phase=0.0,
+        # Rays around all four sides create the corridor/tunnel perspective.
+        endpoints: List[Tuple[float, float]] = []
+
+        # Ceiling and floor: lots of rays so they read like streams of code.
+        for x in range(-8, WIDTH + 9, 14):
+            endpoints.append((float(x), -8.0))
+            endpoints.append((float(x), float(HEIGHT + 8)))
+
+        # Side walls: slightly wider spacing because the vertical distance is shorter.
+        for y in range(6, HEIGHT, 15):
+            endpoints.append((-8.0, float(y)))
+            endpoints.append((float(WIDTH + 8), float(y)))
+
+        random.shuffle(endpoints)
+        for i, (end_x, end_y) in enumerate(endpoints):
+            self.streams.append(
+                TunnelStream(
+                    end_x=end_x,
+                    end_y=end_y,
+                    phase=random.random(),
+                    speed=random.uniform(0.055, 0.115),
+                    glyphs=[random.choice(MATRIX_CHARS) for _ in range(self.GLYPHS_PER_RAY)],
+                    mutation=random.uniform(0.65, 1.9),
+                    hot=(i % 7 == 0),
                 )
-                stream.recycle(full_height=True)
-                self.streams.append(stream)
+            )
 
-    def _image(self, stream: Stream, glyph: str, level: int, head: bool = False) -> pygame.Surface:
-        key = (stream.font_size, glyph, level, head)
+    def _image(self, size: int, glyph: str, level: int, head: bool = False) -> pygame.Surface:
+        level = max(0, min(7, level))
+        key = (size, glyph, level, head)
         image = self.cache.get(key)
         if image is not None:
             return image
 
         if head:
-            color = self.HEADS[stream.depth]
+            color = (205, 255, 215)
         else:
-            color = self.PALETTES[stream.depth][max(0, min(7, level))]
-        image = self.fonts[stream.font_size].render(glyph, True, color)
+            color = self.PALETTE[level]
+        image = self.fonts[size].render(glyph, True, color)
         self.cache[key] = image
         return image
 
-    def update(self, dt: float, energy: float = 0.0) -> None:
-        boost = 1.0 + min(1.0, max(0.0, energy)) * 0.16
-        for stream in self.streams:
-            stream.y += stream.speed * boost * dt
-            stream.phase += dt
+    @staticmethod
+    def _perspective(depth: float) -> float:
+        # Pack far-away code tightly around the vanishing point, then rapidly
+        # expand it as it approaches the viewer/screen edge.
+        depth = max(0.0, min(1.0, depth))
+        return depth ** 1.82
 
-            # Keep code alive. Near streams mutate faster than distant streams.
-            chance = dt * stream.mutation
-            if stream.glyphs and random.random() < chance:
-                count = 2 if stream.depth == 2 and random.random() < 0.25 else 1
-                for _ in range(count):
+    def update(self, dt: float, energy: float = 0.0) -> None:
+        self.time += dt
+        boost = 1.0 + max(0.0, min(1.0, energy)) * 0.30
+
+        for stream in self.streams:
+            stream.phase = (stream.phase + stream.speed * boost * dt) % 1.0
+
+            if stream.glyphs and random.random() < dt * stream.mutation:
+                changes = 2 if random.random() < 0.18 else 1
+                for _ in range(changes):
                     stream.glyphs[random.randrange(len(stream.glyphs))] = random.choice(MATRIX_CHARS)
 
-            tail_y = stream.y - stream.length * stream.spacing
-            if tail_y > HEIGHT + stream.spacing:
-                stream.recycle()
+    def _draw_tunnel_lines(self) -> None:
+        self.lines.fill((0, 0, 0, 0))
+
+        # Faint perspective rails give the code the corridor geometry from the
+        # reference without looking like a wire-frame graphic.
+        for index, stream in enumerate(self.streams):
+            if index % 4 != 0:
+                continue
+            pygame.draw.line(
+                self.lines,
+                (0, 64, 18, 34),
+                (VP_X, VP_Y),
+                (int(stream.end_x), int(stream.end_y)),
+                1,
+            )
+
+        # Moving nested rectangles deepen the illusion of traveling through a hall.
+        for ring in range(9):
+            depth = ((self.time * 0.12) + ring / 9.0) % 1.0
+            t = self._perspective(depth)
+            half_w = max(2, int((WIDTH * 0.54) * t))
+            half_h = max(2, int((HEIGHT * 0.55) * t))
+            rect = pygame.Rect(VP_X - half_w, VP_Y - half_h, half_w * 2, half_h * 2)
+            alpha = int(16 + 45 * t)
+            pygame.draw.rect(self.lines, (0, 105, 30, alpha), rect, 1)
 
     def draw(self, destination: pygame.Surface, energy: float = 0.0) -> None:
         self.surface.fill((0, 0, 0, 0))
         self.glow.fill((0, 0, 0, 0))
+        self._draw_tunnel_lines()
 
         for stream in self.streams:
+            dx = stream.end_x - VP_X
+            dy = stream.end_y - VP_Y
+
+            # Each ray contains a moving chain of glyphs at different depths.
+            # Wrapping the normalized depth makes the tunnel continuously flow
+            # toward the viewer instead of falling straight down.
+            points: List[Tuple[float, int, int, str]] = []
             for index, glyph in enumerate(stream.glyphs):
-                y = int(stream.y - index * stream.spacing)
-                if y < -stream.spacing or y > HEIGHT:
-                    continue
+                depth = (stream.phase + index / self.GLYPHS_PER_RAY) % 1.0
+                t = self._perspective(depth)
+                x = int(VP_X + dx * t)
+                y = int(VP_Y + dy * t)
+                size = self.FONT_SIZES[min(len(self.FONT_SIZES) - 1, int(t * len(self.FONT_SIZES)))]
+                points.append((t, x, y, glyph))
 
-                # Long luminous fade: first few characters stay vivid, then
-                # smoothly sink into the black background.
-                position = index / max(1, stream.length - 1)
-                intensity = max(0.0, 1.0 - position)
-                intensity = intensity ** 1.25
-                level = max(0, min(7, int(intensity * 7.99)))
+            # Draw far to near so large foreground glyphs sit naturally on top.
+            points.sort(key=lambda item: item[0])
+            for point_index, (t, x, y, glyph) in enumerate(points):
+                # Near code is brighter and larger; distant code stays visible
+                # enough to form the dense center of the tunnel.
+                level = max(1, min(7, int(1.0 + t * 6.6)))
+                size = self.FONT_SIZES[min(len(self.FONT_SIZES) - 1, int(t * len(self.FONT_SIZES)))]
 
-                # Every stream has a bright head. Foreground heads get a tiny
-                # soft halo so they read like the classic white-green lead glyph.
-                is_head = index == 0
-                if is_head and stream.depth == 2:
-                    halo = self._image(stream, glyph, 7, False)
-                    halo.set_alpha(90)
-                    self.glow.blit(halo, (stream.x - 1, y))
-                    self.glow.blit(halo, (stream.x + 1, y))
-                    halo.set_alpha(255)
+                is_head = stream.hot and t > 0.86 and point_index == len(points) - 1
+                if is_head:
+                    glow = self._image(size, glyph, 7, False)
+                    glow.set_alpha(95)
+                    self.glow.blit(glow, (x - 2, y))
+                    self.glow.blit(glow, (x + 2, y))
+                    self.glow.blit(glow, (x, y - 1))
+                    glow.set_alpha(255)
 
-                self.surface.blit(self._image(stream, glyph, level, is_head), (stream.x, y))
+                image = self._image(size, glyph, level, is_head)
+                self.surface.blit(image, (x, y))
 
-        # A very light glow keeps the green rich on the physical 480x320 panel
-        # without turning the dashboard into a neon fog.
-        self.glow.set_alpha(80)
+        # Keep the tunnel luminous but restrained enough for the dashboard text.
+        self.lines.set_alpha(180)
+        destination.blit(self.lines, (0, 0))
+        self.lines.set_alpha(255)
+
+        self.glow.set_alpha(72)
         destination.blit(self.glow, (0, 0))
         self.glow.set_alpha(255)
         destination.blit(self.surface, (0, 0))
