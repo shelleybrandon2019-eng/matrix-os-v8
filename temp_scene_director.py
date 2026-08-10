@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Matrix OS: ultra-dense code rain, giant cyber clock, dual Neo temperature reveal."""
+"""Matrix OS: clean fast rain, giant 24-hour cyber clock, dual Neo temp melt."""
 from __future__ import annotations
 
 import math
@@ -19,7 +19,7 @@ from main import BLACK, FULLSCREEN, HEIGHT, WIDTH, choose_matrix_font, temp_colo
 FPS = 60
 GREEN = (0, 255, 90)
 SHADOW = (0, 24, 8)
-WHITE_GREEN = (220, 255, 225)
+WHITE_GREEN = (218, 255, 226)
 
 MATRIX_CHARS = (
     "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ"
@@ -27,10 +27,11 @@ MATRIX_CHARS = (
     "0123456789@#$%&*+=<>?/\\|:;.-_"
 )
 
-RAIN_SECONDS = 5.5
-FORM_SECONDS = 1.55
-HOLD_SECONDS = 3.6
-MELT_SECONDS = 1.75
+# A complete visual cycle stays quick and alive without hard-resetting the app.
+RAIN_SECONDS = 6.0
+FORM_SECONDS = 1.40
+HOLD_SECONDS = 2.25
+MELT_SECONDS = 2.65
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -97,10 +98,9 @@ def segment_polygon(x: int, y: int, w: int, h: int, t: int, key: str) -> List[Tu
 
 
 class CyberClock:
-    """Huge angular neon clock that uses most of the screen width."""
+    """Oversized angular 24-hour neon clock."""
 
     def __init__(self) -> None:
-        self.ampm_font = choose_cyber_font(15, bold=True)
         self.glow = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
 
     def draw_digit(self, surface: pygame.Surface, digit: str, x: int, y: int,
@@ -109,65 +109,71 @@ class CyberClock:
             pygame.draw.polygon(surface, color, segment_polygon(x, y, w, h, thickness, seg))
 
     def draw(self, screen: pygame.Surface) -> None:
-        now = datetime.now()
-        text = now.strftime("%I:%M").lstrip("0")
-        ampm = now.strftime("%p")
+        # 24-hour time, including the leading zero.
+        text = datetime.now().strftime("%H:%M")
 
-        digit_w = 76
-        digit_h = 94
-        thickness = 12
+        # Bigger than the old clock but still leaves a small edge margin on 480px.
+        digit_w = 96
+        digit_h = 112
+        thickness = 15
         gap = 8
-        colon_w = 20
+        colon_w = 18
 
         widths = [colon_w if ch == ":" else digit_w for ch in text]
         total = sum(widths) + gap * (len(text) - 1)
-        scale = min(1.0, (WIDTH - 28) / max(1, total))
+        scale = min(1.0, (WIDTH - 18) / max(1, total))
+
         digit_w = int(digit_w * scale)
         digit_h = int(digit_h * scale)
-        thickness = max(8, int(thickness * scale))
+        thickness = max(9, int(thickness * scale))
         gap = max(5, int(gap * scale))
-        colon_w = max(14, int(colon_w * scale))
+        colon_w = max(12, int(colon_w * scale))
+
         widths = [colon_w if ch == ":" else digit_w for ch in text]
         total = sum(widths) + gap * (len(text) - 1)
-
         start_x = (WIDTH - total) // 2
-        y = 4
+        y = 1
 
         self.glow.fill((0, 0, 0, 0))
         x = start_x
         for ch, cw in zip(text, widths):
             if ch == ":":
-                dot = max(7, thickness - 2)
+                dot = max(8, thickness - 3)
                 cx = x + cw // 2
                 for cy in (y + digit_h // 3, y + digit_h * 2 // 3):
-                    pygame.draw.rect(self.glow, (0,255,90,150),
-                                     (cx-dot//2, cy-dot//2, dot, dot), border_radius=2)
+                    pygame.draw.rect(
+                        self.glow,
+                        (0, 255, 90, 150),
+                        (cx-dot//2, cy-dot//2, dot, dot),
+                        border_radius=2,
+                    )
             else:
-                self.draw_digit(self.glow, ch, x, y, digit_w, digit_h,
-                                thickness + 4, (0,155,50,90))
+                self.draw_digit(
+                    self.glow, ch, x, y, digit_w, digit_h,
+                    thickness + 5, (0, 160, 52, 92),
+                )
             x += cw + gap
 
-        self.glow.set_alpha(145)
+        self.glow.set_alpha(150)
         screen.blit(self.glow, (0, 0))
         self.glow.set_alpha(255)
 
         x = start_x
         for ch, cw in zip(text, widths):
             if ch == ":":
-                dot = max(7, thickness - 2)
+                dot = max(8, thickness - 3)
                 cx = x + cw // 2
                 for cy in (y + digit_h // 3, y + digit_h * 2 // 3):
-                    pygame.draw.rect(screen, GREEN,
-                                     (cx-dot//2, cy-dot//2, dot, dot), border_radius=2)
+                    pygame.draw.rect(
+                        screen, GREEN,
+                        (cx-dot//2, cy-dot//2, dot, dot),
+                        border_radius=2,
+                    )
             else:
-                self.draw_digit(screen, ch, x, y, digit_w, digit_h, thickness, GREEN)
+                self.draw_digit(
+                    screen, ch, x, y, digit_w, digit_h, thickness, GREEN
+                )
             x += cw + gap
-
-        am = self.ampm_font.render(ampm, True, GREEN)
-        am_shadow = self.ampm_font.render(ampm, True, SHADOW)
-        am_rect = am.get_rect(topright=(WIDTH - 9, y + digit_h - 18))
-        screen.blit(am_shadow, am_rect.move(1, 1))
-        screen.blit(am, am_rect)
 
 
 @dataclass
@@ -183,7 +189,15 @@ class RevealGlyph:
 
 
 class DualNeoReveal:
-    """OUTSIDE and INSIDE form together from code and melt back into the rain."""
+    """Temps form cleanly, hold solid, then physically melt downward into rain."""
+
+    MELT_COLORS = (
+        (210, 255, 220),
+        (145, 255, 175),
+        (78, 250, 132),
+        (24, 240, 95),
+        (0, 220, 68),
+    )
 
     def __init__(self, outside: Optional[float], inside: Optional[float],
                  label_font: pygame.font.Font, value_font: pygame.font.Font,
@@ -197,10 +211,10 @@ class DualNeoReveal:
         self.cache: Dict[Tuple[str, Tuple[int,int,int]], pygame.Surface] = {}
         self.particles: List[RevealGlyph] = []
         self.layout = [
-            ("OUTSIDE", label_font, GREEN, 132),
-            (format_temp(outside), value_font, temp_color(outside), 171),
-            ("INSIDE", label_font, GREEN, 222),
-            (format_temp(inside), value_font, temp_color(inside), 261),
+            ("OUTSIDE", label_font, GREEN, 137),
+            (format_temp(outside), value_font, temp_color(outside), 178),
+            ("INSIDE", label_font, GREEN, 229),
+            (format_temp(inside), value_font, temp_color(inside), 270),
         ]
         self.build_particles()
 
@@ -215,34 +229,46 @@ class DualNeoReveal:
     def build_particles(self) -> None:
         mask = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         for text, font, _color, y in self.layout:
-            image = font.render(text, True, (255,255,255))
+            image = font.render(text, True, (255, 255, 255))
             mask.blit(image, image.get_rect(center=(WIDTH//2, y)))
 
-        targets: List[Tuple[int,int]] = []
-        for y in range(112, 300, 5):
-            for x in range(10, WIDTH-10, 5):
-                if mask.get_at((x,y)).a > 35:
-                    targets.append((x,y))
-        if len(targets) > 570:
-            targets = random.sample(targets, 570)
+        targets: List[Tuple[int, int]] = []
+        for y in range(116, 304, 5):
+            for x in range(8, WIDTH - 8, 5):
+                if mask.get_at((x, y)).a > 35:
+                    targets.append((x, y))
+
+        # Enough material for a convincing dissolve without flooding the Pi.
+        if len(targets) > 520:
+            targets = random.sample(targets, 520)
 
         for tx, ty in targets:
-            if random.random() < 0.82:
-                sx = tx + random.uniform(-34, 34)
-                sy = random.uniform(-120, 105)
+            if random.random() < 0.88:
+                sx = tx + random.uniform(-28, 28)
+                sy = random.uniform(-105, 112)
             elif random.random() < 0.5:
-                sx = random.uniform(-65, -5)
-                sy = random.uniform(90, HEIGHT)
+                sx = random.uniform(-45, -5)
+                sy = random.uniform(100, HEIGHT)
             else:
-                sx = random.uniform(WIDTH+5, WIDTH+65)
-                sy = random.uniform(90, HEIGHT)
-            self.particles.append(RevealGlyph(
-                sx, sy, float(tx), float(ty), random.choice(MATRIX_CHARS),
-                random.uniform(0.0,0.34), random.uniform(95,190),
-                random.uniform(-18,18)))
+                sx = random.uniform(WIDTH + 5, WIDTH + 45)
+                sy = random.uniform(100, HEIGHT)
+
+            self.particles.append(
+                RevealGlyph(
+                    sx=sx,
+                    sy=sy,
+                    tx=float(tx),
+                    ty=float(ty),
+                    glyph=random.choice(MATRIX_CHARS),
+                    delay=random.uniform(0.0, 0.28),
+                    fall=random.uniform(150, 285),
+                    wobble=random.uniform(-14, 14),
+                )
+            )
 
     def update(self, dt: float) -> None:
         self.elapsed += dt
+
         if self.phase == "form" and self.elapsed >= FORM_SECONDS:
             self.phase, self.elapsed = "hold", 0.0
         elif self.phase == "hold" and self.elapsed >= HOLD_SECONDS:
@@ -250,52 +276,95 @@ class DualNeoReveal:
         elif self.phase == "melt" and self.elapsed >= MELT_SECONDS:
             self.finished = True
 
+    def backdrop_alpha(self) -> int:
+        """Darken the whole rain field so no hidden shape/image shows behind temps."""
+        if self.phase == "form":
+            t = smoothstep(self.elapsed / FORM_SECONDS)
+            return int(235 * t)
+        if self.phase == "hold":
+            return 235
+
+        t = smoothstep(self.elapsed / MELT_SECONDS)
+        return int(235 * (1.0 - t))
+
     def draw_text(self, screen: pygame.Surface, alpha: int = 255) -> None:
         for text, font, color, y in self.layout:
             shadow = font.render(text, True, SHADOW)
             image = font.render(text, True, color)
+
             if alpha < 255:
                 shadow.set_alpha(alpha)
                 image.set_alpha(alpha)
+
             rect = image.get_rect(center=(WIDTH//2, y))
-            screen.blit(shadow, rect.move(2,2))
+            screen.blit(shadow, rect.move(2, 2))
             screen.blit(image, rect)
 
     def draw(self, screen: pygame.Surface) -> None:
         if self.phase == "form":
-            for p in self.particles:
-                raw = (self.elapsed - p.delay) / max(0.01, FORM_SECONDS-p.delay)
-                t = smoothstep(raw)
-                if t <= 0:
-                    continue
-                x = p.sx + (p.tx-p.sx)*t
-                y = p.sy + (p.ty-p.sy)*t
-                color = WHITE_GREEN if t > .88 and random.random() < .16 else (0, int(120+135*t), int(25+55*t))
-                screen.blit(self.glyph_image(p.glyph,color),(int(x),int(y)))
-            crisp = int(255*clamp((self.elapsed/FORM_SECONDS-.60)/.40,0,1))
+            global_t = clamp(self.elapsed / FORM_SECONDS, 0.0, 1.0)
+
+            # Code flies in, but gets out of the way as the clean solid text appears.
+            particle_alpha = int(
+                255 * (1.0 - smoothstep((global_t - 0.62) / 0.30))
+            )
+
+            if particle_alpha > 0:
+                for p in self.particles:
+                    raw = (self.elapsed - p.delay) / max(0.01, FORM_SECONDS - p.delay)
+                    t = smoothstep(raw)
+                    if t <= 0:
+                        continue
+
+                    x = p.sx + (p.tx - p.sx) * t
+                    y = p.sy + (p.ty - p.sy) * t
+                    stage = min(4, int(t * 4.99))
+                    image = self.glyph_image(p.glyph, self.MELT_COLORS[4 - stage])
+                    if particle_alpha < 255:
+                        image = image.copy()
+                        image.set_alpha(particle_alpha)
+                    screen.blit(image, (int(x), int(y)))
+
+            crisp = int(255 * smoothstep((global_t - 0.50) / 0.34))
             if crisp:
                 self.draw_text(screen, crisp)
 
         elif self.phase == "hold":
+            # Intentionally clean: no random glyphs or rain drawn through the letters.
             self.draw_text(screen)
-            for _ in range(48):
-                p = random.choice(self.particles)
-                color = WHITE_GREEN if random.random() < .16 else GREEN
-                screen.blit(self.glyph_image(random.choice(MATRIX_CHARS),color),
-                            (int(p.tx+random.uniform(-2,2)), int(p.ty+random.uniform(-2,2))))
 
         else:
-            t = smoothstep(self.elapsed/MELT_SECONDS)
-            alpha = int(255*(1-t))
-            if alpha:
-                self.draw_text(screen, alpha)
-            for p in self.particles:
-                x = p.tx + math.sin(self.elapsed*8+p.ty*.05)*p.wobble*t
-                y = p.ty + p.fall*(t**1.65)
-                image = self.glyph_image(p.glyph, WHITE_GREEN if random.random()<.07 else GREEN)
-                if alpha < 255:
-                    image = image.copy(); image.set_alpha(alpha)
-                screen.blit(image,(int(x),int(y)))
+            t = clamp(self.elapsed / MELT_SECONDS, 0.0, 1.0)
+            drop_t = smoothstep(t)
+
+            # Keep it solid briefly, then the actual text gives way to falling code.
+            text_fade = clamp((t - 0.12) / 0.34, 0.0, 1.0)
+            text_alpha = int(255 * (1.0 - smoothstep(text_fade)))
+            if text_alpha:
+                self.draw_text(screen, text_alpha)
+
+            particle_alpha = int(
+                255 * (1.0 - smoothstep(clamp((t - 0.72) / 0.28, 0.0, 1.0)))
+            )
+
+            if particle_alpha:
+                color_index = min(
+                    len(self.MELT_COLORS) - 1,
+                    int(drop_t * len(self.MELT_COLORS)),
+                )
+                color = self.MELT_COLORS[color_index]
+
+                for p in self.particles:
+                    # Mostly vertical fall: it should become rain, not explode sideways.
+                    x = p.tx + math.sin(self.elapsed * 7.0 + p.ty * 0.04) * p.wobble * drop_t
+                    y = p.ty + p.fall * (drop_t ** 1.55)
+                    image = self.glyph_image(p.glyph, color)
+
+                    if particle_alpha < 255:
+                        image = image.copy()
+                        image.set_alpha(particle_alpha)
+
+                    screen.blit(image, (int(x), int(y)))
 
 
 class MatrixDashboard:
@@ -303,7 +372,7 @@ class MatrixDashboard:
         pygame.init()
         flags = pygame.FULLSCREEN if FULLSCREEN else 0
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT), flags)
-        pygame.display.set_caption("Matrix OS - Giant Cyber Clock")
+        pygame.display.set_caption("Matrix OS - 24H Cyber Clock")
         pygame.mouse.set_visible(False)
         self.timer = pygame.time.Clock()
 
@@ -312,24 +381,32 @@ class MatrixDashboard:
         self.data.refresh(force=True)
         self.clock = CyberClock()
 
-        self.label_font = choose_cyber_font(27, bold=True)
-        self.value_font = choose_cyber_font(43, bold=True)
+        self.label_font = choose_cyber_font(29, bold=True)
+        self.value_font = choose_cyber_font(46, bold=True)
         self.glyph_font = choose_matrix_font(11, bold=True)
 
         self.reveal: Optional[DualNeoReveal] = None
         self.elapsed = 0.0
 
     def start_reveal(self) -> None:
-        self.data.refresh(force=True)
-        self.reveal = DualNeoReveal(self.data.outside_f, self.data.inside_f,
-                                    self.label_font, self.value_font, self.glyph_font)
+        # Use the latest cached sensor values. Do not force another network request
+        # right at the transition; that can visibly freeze the rain on a Pi.
+        self.data.refresh()
+        self.reveal = DualNeoReveal(
+            self.data.outside_f,
+            self.data.inside_f,
+            self.label_font,
+            self.value_font,
+            self.glyph_font,
+        )
         self.elapsed = 0.0
 
     def update(self, dt: float) -> None:
         self.data.refresh()
-        energy = 0.74 if self.reveal else 0.62
+        energy = 0.66 if self.reveal else 0.58
         self.rain.update(dt, energy)
         self.elapsed += dt
+
         if self.reveal:
             self.reveal.update(dt)
             if self.reveal.finished:
@@ -340,22 +417,24 @@ class MatrixDashboard:
 
     def draw(self) -> None:
         self.screen.fill(BLACK)
-        self.rain.draw(self.screen, 0.78 if self.reveal else 0.68)
+        self.rain.draw(self.screen, 0.64 if self.reveal else 0.58)
 
         if self.reveal:
+            # Full-screen fade, not a rectangle/panel, so there is no visible
+            # "thing behind" the temperature scene.
             veil = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-            # Only darken the lower reveal area; keep the giant clock/rain alive.
-            pygame.draw.rect(veil, (0,0,0,42), (0,112,WIDTH,188))
-            self.screen.blit(veil,(0,0))
+            veil.fill((0, 0, 0, self.reveal.backdrop_alpha()))
+            self.screen.blit(veil, (0, 0))
             self.reveal.draw(self.screen)
 
-        # Clock is ALWAYS last/top and therefore always visible.
+        # Clock stays on top and visible through every phase.
         self.clock.draw(self.screen)
         pygame.display.flip()
 
     def run(self) -> None:
         last = time.monotonic()
         running = True
+
         while running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -367,8 +446,9 @@ class MatrixDashboard:
                         self.start_reveal()
 
             now = time.monotonic()
-            dt = min(.05, now-last)
+            dt = min(0.05, now - last)
             last = now
+
             self.update(dt)
             self.draw()
             self.timer.tick(FPS)
