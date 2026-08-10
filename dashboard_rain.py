@@ -10,9 +10,12 @@ import pygame
 
 WIDTH = 480
 HEIGHT = 320
+# Matrix rain only: half-width Japanese/Katakana glyphs, numbers, and symbols.
+# Intentionally no A-Z/a-z characters.
 MATRIX_CHARS = (
     "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ"
-    "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ@#$%&*+=<>?/\\|"
+    "ｦｧｨｩｪｫｬｭｮｯｰﾞﾟ"
+    "0123456789@#$%&*+=<>?/\\|:;.-_"
 )
 
 
