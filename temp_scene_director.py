@@ -12,8 +12,9 @@ from typing import Optional
 
 import pygame
 
+from dashboard_rain import DashboardRain
 from live_data import LiveData
-from main import BLACK, FULLSCREEN, HEIGHT, WIDTH, CinematicRain, choose_font, choose_matrix_font, temp_color
+from main import BLACK, FULLSCREEN, HEIGHT, WIDTH, choose_font, choose_matrix_font, temp_color
 
 FPS = 60
 GREEN = (0, 255, 90)
@@ -30,7 +31,7 @@ class Dashboard:
         pygame.mouse.set_visible(False)
         self.timer = pygame.time.Clock()
 
-        self.rain = CinematicRain()
+        self.rain = DashboardRain()
         self.data = LiveData()
         self.data.refresh(force=True)
 
@@ -88,7 +89,7 @@ class Dashboard:
 
     def draw(self) -> None:
         self.screen.fill(BLACK)
-        self.rain.draw(self.screen, 0.12)
+        self.rain.draw(self.screen, 0.28)
 
         now = datetime.now()
         clock_text = now.strftime("%I:%M").lstrip("0")
@@ -138,7 +139,7 @@ class Dashboard:
             last = now
 
             self.data.refresh()
-            self.rain.update(dt, 0.12)
+            self.rain.update(dt, 0.28)
             self.draw()
             self.timer.tick(FPS)
 
