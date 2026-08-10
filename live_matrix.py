@@ -1,462 +1,446 @@
 #!/usr/bin/env python3
-"""Matrix Live V11 — continuous SIMULATION WORLD for Pi 4 / 480x320.
+"""Matrix Hub V12 — Sandman rain assembly.
 
-One persistent world, not a scene carousel:
-- believable dark city/street depth
-- buildings, windows, road, reflections, distant portal
-- Matrix code exists inside the world at all times
-- simulation phases continuously bleed/reveal/rebuild the world
-- no tunnel, no starburst, no waiting for separate scenes
-
-Cycle (~24 sec): CITY -> CODE BLEED -> FULL REVEAL -> REBUILD -> CITY
+480x320 Raspberry Pi dashboard:
+- permanent Matrix rain
+- compact clock
+- one large temperature scene at a time
+- label/value gather out of falling rain particles
+- hold clearly, then crumble/melt back into the rain
+- demo temperatures drift periodically (easy to swap back to live data later)
 """
+from __future__ import annotations
+
 import math
 import os
+import random
 import time
+from dataclasses import dataclass
+from datetime import datetime
 
 os.environ.setdefault("SDL_VIDEO_CENTERED", "1")
 
 import pygame
-from pygame.locals import DOUBLEBUF, FULLSCREEN, OPENGL, QUIT, KEYDOWN, K_ESCAPE, K_q
-from OpenGL.GL import (
-    GL_ALPHA_TEST, GL_BLEND, GL_COLOR_BUFFER_BIT, GL_DEPTH_BUFFER_BIT, GL_DEPTH_TEST,
-    GL_GREATER, GL_LINES, GL_LINE_LOOP, GL_MODELVIEW, GL_NEAREST,
-    GL_ONE_MINUS_SRC_ALPHA, GL_PROJECTION, GL_QUADS, GL_RGBA, GL_SRC_ALPHA,
-    GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_TEXTURE_MIN_FILTER, GL_UNSIGNED_BYTE,
-    glAlphaFunc, glBegin, glBindTexture, glBlendFunc, glClear, glClearColor,
-    glColor4f, glDeleteTextures, glDisable, glEnable, glEnd, glGenTextures,
-    glLineWidth, glLoadIdentity, glMatrixMode, glPopMatrix, glPushMatrix,
-    glRotatef, glTexCoord2f, glTexImage2D, glTexParameteri, glTranslatef,
-    glVertex3f, glViewport,
-)
-from OpenGL.GLU import gluPerspective
+from pygame.locals import FULLSCREEN, QUIT, KEYDOWN, K_ESCAPE, K_q
 
 W, H = 480, 320
-GLYPHS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ<>+-*/{}[]:;=#$%@!?|"
-ATLAS_COLS = 8
-ATLAS_ROWS = math.ceil(len(GLYPHS) / ATLAS_COLS)
+FPS = 60
 
-# High-contrast palette for the physical SPI LCD.
-BLACK = (0.0, 0.0, 0.0)
-CITY_DARK = (0.00, 0.055, 0.025)
-CITY_MID = (0.00, 0.11, 0.045)
-CITY_EDGE = (0.02, 0.30, 0.10)
-G0 = (0.00, 0.30, 0.00)
-G1 = (0.00, 0.52, 0.02)
-G2 = (0.02, 0.78, 0.05)
-G3 = (0.08, 1.00, 0.16)
-HEAD = (0.72, 1.00, 0.76)
-PORTAL = (0.24, 1.00, 0.68)
-WARM = (0.82, 0.78, 0.34)
-RED = (1.0, 0.05, 0.03)
+BLACK = (0, 0, 0)
+GREEN = (0, 255, 82)
+GREEN_MID = (0, 176, 62)
+GREEN_DIM = (0, 88, 35)
+GREEN_FAINT = (0, 42, 18)
+WHITE_GREEN = (205, 255, 220)
+YELLOW = (255, 224, 36)
+ORANGE = (255, 120, 25)
+RED = (255, 52, 35)
 
-CYCLE = 24.0
+GLYPHS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz<>+-*/{}[]:;=#$%@!?|λμΩ"
+LABELS = ("OUTSIDE", "INSIDE", "FRONT ROOM", "BEDROOM")
+
+SCENE_SECONDS = 9.0
+GATHER_END = 2.7
+HOLD_END = 6.3
+MELT_END = 8.5
+TEMP_DRIFT_SECONDS = 18.0
 
 
-def clamp(v, lo=0.0, hi=1.0):
+def clamp(v, lo, hi):
     return max(lo, min(hi, v))
 
 
-def smoothstep(a, b, x):
-    if a == b:
-        return 0.0
-    t = clamp((x - a) / (b - a))
-    return t * t * (3.0 - 2.0 * t)
+def ease_out_cubic(x):
+    x = clamp(x, 0.0, 1.0)
+    return 1.0 - (1.0 - x) ** 3
 
 
-def phase_amount(t):
-    """0 = mostly real city, 1 = fully exposed Matrix code."""
-    p = t % CYCLE
-    if p < 6.0:      # city breathing
-        return 0.12 + 0.05 * math.sin(p * 0.9)
-    if p < 11.0:     # code bleeds through
-        return 0.12 + 0.88 * smoothstep(6.0, 11.0, p)
-    if p < 16.0:     # full reveal
-        return 1.0
-    if p < 22.0:     # rebuild simulation
-        return 1.0 - 0.88 * smoothstep(16.0, 22.0, p)
-    return 0.12
+def ease_in_cubic(x):
+    x = clamp(x, 0.0, 1.0)
+    return x ** 3
 
 
-def phase_name(t):
-    p = t % CYCLE
-    if p < 6: return "SIMULATION"
-    if p < 11: return "CODE BLEED"
-    if p < 16: return "REVEALED"
-    if p < 22: return "REBUILD"
-    return "SIMULATION"
-
-
-def pick_font(size=32):
+def choose_font(size, bold=False):
     for name in ("DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono", "monospace"):
-        path = pygame.font.match_font(name)
+        path = pygame.font.match_font(name, bold=bold)
         if path:
             return pygame.font.Font(path, size)
     return pygame.font.Font(None, size)
 
 
-def make_atlas():
-    font = pick_font(32)
-    cw, ch = 34, 42
-    surf = pygame.Surface((ATLAS_COLS * cw, ATLAS_ROWS * ch), pygame.SRCALPHA, 32)
-    surf.fill((0, 0, 0, 0))
-    for i, glyph in enumerate(GLYPHS):
-        img = font.render(glyph, True, (255, 255, 255, 255))
-        r = img.get_rect(center=((i % ATLAS_COLS) * cw + cw // 2,
-                                 (i // ATLAS_COLS) * ch + ch // 2))
-        surf.blit(img, r)
-    data = pygame.image.tostring(surf, "RGBA", True)
-    tex = glGenTextures(1)
-    glBindTexture(GL_TEXTURE_2D, tex)
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, surf.get_width(), surf.get_height(),
-                 0, GL_RGBA, GL_UNSIGNED_BYTE, data)
-    return tex
+def temp_color(v):
+    if v >= 86:
+        return ORANGE
+    if v >= 78:
+        return YELLOW
+    if v <= 64:
+        return (90, 210, 255)
+    return GREEN
 
 
-def glyph_uv(ch):
-    i = GLYPHS.find(ch)
-    if i < 0:
-        i = 0
-    cx, cy = i % ATLAS_COLS, i // ATLAS_COLS
-    return (cx / ATLAS_COLS,
-            1.0 - ((cy + 1) / ATLAS_ROWS),
-            (cx + 1) / ATLAS_COLS,
-            1.0 - (cy / ATLAS_ROWS))
+@dataclass
+class RainColumn:
+    x: int
+    y: float
+    speed: float
+    length: int
+    phase: int
 
 
-def hchar(seed, idx, tick):
-    n = (seed * 1103515245 + idx * 12345 + tick * 2654435761) & 0xFFFFFFFF
-    return GLYPHS[n % len(GLYPHS)]
+class MatrixRain:
+    def __init__(self, font):
+        self.font = font
+        self.char_h = max(10, font.get_height())
+        self.columns = []
+        self.cache = {}
+        gap = 12
+        for x in range(-4, W + 8, gap):
+            self.columns.append(
+                RainColumn(
+                    x=x,
+                    y=random.uniform(-H, H),
+                    speed=random.uniform(62, 155),
+                    length=random.randint(8, 22),
+                    phase=random.randrange(10000),
+                )
+            )
+
+    def update(self, dt):
+        for c in self.columns:
+            c.y += c.speed * dt
+            if c.y - c.length * self.char_h > H + 30:
+                c.y = random.uniform(-100, -10)
+                c.speed = random.uniform(62, 155)
+                c.length = random.randint(8, 22)
+                c.phase = random.randrange(10000)
+
+    def draw(self, screen, t, dim_factor=1.0):
+        tick = int(t * 8)
+        for col_i, c in enumerate(self.columns):
+            for i in range(c.length):
+                yy = int(c.y - i * self.char_h)
+                if yy < -self.char_h or yy > H:
+                    continue
+
+                n = (c.phase + i * 19 + tick * 7 + col_i * 31) % len(GLYPHS)
+                ch = GLYPHS[n]
+
+                if i == 0:
+                    color = WHITE_GREEN
+                elif i < 3:
+                    color = GREEN
+                elif i < 8:
+                    color = GREEN_MID
+                else:
+                    color = GREEN_DIM
+
+                if dim_factor < 1.0:
+                    color = tuple(int(v * dim_factor) for v in color)
+
+                key = (ch, color)
+                img = self.cache.get(key)
+                if img is None:
+                    img = self.font.render(ch, True, color)
+                    self.cache[key] = img
+                screen.blit(img, (c.x, yy))
 
 
-def billboard(ch, x, y, z, size, color=G3, alpha=1.0, rot_y=0.0, rot_x=0.0):
-    u0, v0, u1, v1 = glyph_uv(ch)
-    hw, hh = size * 0.52, size
-    glPushMatrix()
-    glTranslatef(x, y, z)
-    if rot_y: glRotatef(rot_y, 0, 1, 0)
-    if rot_x: glRotatef(rot_x, 1, 0, 0)
-    glColor4f(color[0], color[1], color[2], alpha)
-    glBegin(GL_QUADS)
-    glTexCoord2f(u0, v0); glVertex3f(-hw, -hh, 0)
-    glTexCoord2f(u1, v0); glVertex3f( hw, -hh, 0)
-    glTexCoord2f(u1, v1); glVertex3f( hw,  hh, 0)
-    glTexCoord2f(u0, v1); glVertex3f(-hw,  hh, 0)
-    glEnd()
-    glPopMatrix()
+@dataclass
+class Particle:
+    sx: float
+    sy: float
+    tx: float
+    ty: float
+    size: int
+    drift: float
+    phase: float
+    color_mix: float
+    vx: float = 0.0
+    vy: float = 0.0
 
 
-def quad(x0, y0, x1, y1, z, color, alpha=1.0):
-    glDisable(GL_TEXTURE_2D)
-    glColor4f(color[0], color[1], color[2], alpha)
-    glBegin(GL_QUADS)
-    glVertex3f(x0, y0, z); glVertex3f(x1, y0, z)
-    glVertex3f(x1, y1, z); glVertex3f(x0, y1, z)
-    glEnd()
-    glEnable(GL_TEXTURE_2D)
+class SandText:
+    def __init__(self, label_font, value_font):
+        self.label_font = label_font
+        self.value_font = value_font
+        self.label = ""
+        self.value_text = ""
+        self.value_color = GREEN
+        self.label_surface = None
+        self.value_surface = None
+        self.particles = []
 
+    def _render_centered_mask(self, label, value_text):
+        surf = pygame.Surface((W, H), pygame.SRCALPHA, 32)
 
-def line(x0, y0, z0, x1, y1, z1, color, width=1.0, alpha=1.0):
-    glDisable(GL_TEXTURE_2D)
-    glLineWidth(width)
-    glColor4f(color[0], color[1], color[2], alpha)
-    glBegin(GL_LINES)
-    glVertex3f(x0, y0, z0); glVertex3f(x1, y1, z1)
-    glEnd()
-    glEnable(GL_TEXTURE_2D)
+        label_img = self.label_font.render(label, True, (255, 255, 255))
+        value_img = self.value_font.render(value_text, True, (255, 255, 255))
 
+        label_rect = label_img.get_rect(center=(W // 2, 137))
+        value_rect = value_img.get_rect(center=(W // 2, 218))
 
-def box_outline(x0, y0, x1, y1, z, color, width=1.4, alpha=1.0):
-    glDisable(GL_TEXTURE_2D)
-    glLineWidth(width)
-    glColor4f(color[0], color[1], color[2], alpha)
-    glBegin(GL_LINE_LOOP)
-    glVertex3f(x0, y0, z); glVertex3f(x1, y0, z)
-    glVertex3f(x1, y1, z); glVertex3f(x0, y1, z)
-    glEnd()
-    glEnable(GL_TEXTURE_2D)
+        surf.blit(label_img, label_rect)
+        surf.blit(value_img, value_rect)
 
+        self.label_surface = (label_img, label_rect)
+        self.value_surface = (value_img, value_rect)
+        return surf, label_rect, value_rect
 
-def draw_sky_rain(t, reveal):
-    """Distant code rain always visible; stronger when reality breaks."""
-    tick = int(t * 7.0)
-    cols = 34
-    for c in range(cols):
-        x = -7.2 + c * 14.4 / (cols - 1)
-        z = -15.0 - ((c * 4.1) % 26.0)
-        speed = 0.50 + (c % 7) * 0.055
-        head = 4.5 - ((t * speed + c * 0.43) % 9.0)
-        length = 5 + int(5 * reveal) + (c % 3)
-        for i in range(length):
-            y = head + i * 0.58
-            if y > 4.4: y -= 9.0
-            if i == 0:
-                color = HEAD
-            elif i < 3:
-                color = G3 if reveal > 0.45 else G2
+    def reset(self, label, value):
+        self.label = label
+        self.value_text = f"{value:.1f}°F"
+        self.value_color = temp_color(value)
+        mask_surf, label_rect, value_rect = self._render_centered_mask(self.label, self.value_text)
+        mask = pygame.mask.from_surface(mask_surf)
+
+        points = mask.outline()
+        step = 4
+        for y in range(78, 268, step):
+            for x in range(24, W - 24, step):
+                if mask.get_at((x, y)):
+                    points.append((x, y))
+
+        if len(points) > 1650:
+            stride = max(1, len(points) // 1650)
+            points = points[::stride][:1650]
+
+        random.shuffle(points)
+        self.particles = []
+        for idx, (tx, ty) in enumerate(points):
+            if random.random() < 0.78:
+                sx = tx + random.uniform(-80, 80)
+                sy = random.uniform(-260, -10)
             else:
-                color = G2 if reveal > 0.7 else G0
-            alpha = 0.32 + 0.68 * reveal if i > 2 else 0.65 + 0.35 * reveal
-            billboard(hchar(1200+c, i, tick+i//2), x, y, z, 0.17, color, alpha)
+                sx = random.choice((-1, 1)) * random.uniform(W * 0.55, W * 0.95) + W / 2
+                sy = random.uniform(-40, H * 0.85)
+
+            is_value = ty > 170
+            self.particles.append(
+                Particle(
+                    sx=sx,
+                    sy=sy,
+                    tx=float(tx),
+                    ty=float(ty),
+                    size=random.choice((1, 2, 2, 2, 3)),
+                    drift=random.uniform(-18, 18),
+                    phase=random.uniform(0, math.tau),
+                    color_mix=1.0 if is_value else 0.0,
+                    vx=random.uniform(-42, 42),
+                    vy=random.uniform(72, 175),
+                )
+            )
+
+    def draw(self, screen, phase_t):
+        if phase_t < GATHER_END:
+            p = ease_out_cubic(phase_t / GATHER_END)
+            for particle in self.particles:
+                wobble = math.sin(particle.phase + phase_t * 5.5) * (1.0 - p) * 16
+                x = particle.sx + (particle.tx - particle.sx) * p + wobble
+                y = particle.sy + (particle.ty - particle.sy) * p
+
+                base = self.value_color if particle.color_mix > 0.5 else GREEN
+                k = 0.45 + 0.55 * p
+                color = tuple(int(v * k) for v in base)
+                pygame.draw.rect(screen, color, (int(x), int(y), particle.size, particle.size))
+
+            if p > 0.84:
+                alpha = int(255 * ((p - 0.84) / 0.16))
+                self._draw_crisp(screen, alpha)
+            return
+
+        if phase_t < HOLD_END:
+            self._draw_crisp(screen, 255)
+            hold_t = phase_t - GATHER_END
+            for i, particle in enumerate(self.particles[::8]):
+                if (i + int(hold_t * 8)) % 4:
+                    continue
+                base = self.value_color if particle.color_mix > 0.5 else GREEN
+                pygame.draw.rect(
+                    screen,
+                    base,
+                    (
+                        int(particle.tx + math.sin(particle.phase + hold_t * 3) * 1.5),
+                        int(particle.ty + math.cos(particle.phase + hold_t * 2) * 1.0),
+                        1,
+                        2,
+                    ),
+                )
+            return
+
+        if phase_t < MELT_END:
+            mp = (phase_t - HOLD_END) / (MELT_END - HOLD_END)
+            fade = 1.0 - ease_in_cubic(mp)
+            if mp < 0.18:
+                self._draw_crisp(screen, int(255 * (1.0 - mp / 0.18)))
+
+            for particle in self.particles:
+                fall = ease_in_cubic(mp)
+                x = particle.tx + particle.vx * fall * 0.85 + math.sin(
+                    particle.phase + phase_t * 7
+                ) * 5 * fall
+                y = particle.ty + particle.vy * (fall ** 1.25) * 1.15 + 90 * fall * fall
+                if y > H + 5:
+                    continue
+                base = self.value_color if particle.color_mix > 0.5 else GREEN
+                color = tuple(int(v * max(0.18, fade)) for v in base)
+                pygame.draw.rect(screen, color, (int(x), int(y), particle.size, particle.size))
+
+    def _draw_crisp(self, screen, alpha):
+        label_img, label_rect = self.label_surface
+        value_img, value_rect = self.value_surface
+
+        glow_label = self.label_font.render(self.label, True, (0, 110, 42))
+        glow_value = self.value_font.render(self.value_text, True, tuple(max(0, v // 3) for v in self.value_color))
+        for dx, dy in ((-2, 0), (2, 0), (0, -2), (0, 2)):
+            screen.blit(glow_label, label_rect.move(dx, dy))
+            screen.blit(glow_value, value_rect.move(dx, dy))
+
+        label_final = self.label_font.render(self.label, True, GREEN)
+        value_final = self.value_font.render(self.value_text, True, self.value_color)
+        label_final.set_alpha(alpha)
+        value_final.set_alpha(alpha)
+        screen.blit(label_final, label_rect)
+        screen.blit(value_final, value_rect)
 
 
-def draw_street(t, reveal):
-    # road body
-    quad(-6.3, -3.18, 6.3, -2.92, -6.0, CITY_DARK, 1.0)
+class MatrixHub:
+    def __init__(self):
+        pygame.init()
+        flags = FULLSCREEN
+        self.screen = pygame.display.set_mode((W, H), flags)
+        pygame.display.set_caption("Matrix Hub V12 - Sandman")
+        pygame.mouse.set_visible(False)
+        self.clock = pygame.time.Clock()
 
-    # road/curb perspective lines
-    for side in (-1, 1):
-        line(side * 2.1, -3.0, -5.0, side * 5.8, -3.0, -34.0,
-             G1 if reveal > 0.5 else CITY_EDGE, 2.0, 0.75)
-        line(side * 3.2, -2.98, -5.0, side * 7.5, -2.98, -34.0,
-             G0 if reveal > 0.35 else CITY_MID, 1.0, 0.7)
+        self.rain_font = choose_font(17, bold=False)
+        self.clock_font = choose_font(43, bold=True)
+        self.ampm_font = choose_font(17, bold=True)
+        self.label_font = choose_font(54, bold=True)
+        self.value_font = choose_font(67, bold=True)
+        self.tiny_font = choose_font(11, bold=True)
 
-    # center lane broken marks
-    for k in range(9):
-        z0 = -6.0 - k * 3.0
-        z1 = z0 - 1.2
-        line(0.0, -2.98, z0, 0.0, -2.98, z1,
-             G2 if reveal > 0.65 else CITY_EDGE, 2.0, 0.75)
+        self.rain = MatrixRain(self.rain_font)
+        self.sand = SandText(self.label_font, self.value_font)
 
-    # Matrix glyph reflections crawling across the wet street
-    tick = int(t * 4.5)
-    rows = 9
-    for r in range(rows):
-        z = -6.0 - r * 2.8
-        for c in range(13):
-            if (c + r + tick) % 4 == 0 and reveal < 0.55:
-                continue
-            x = -4.8 + c * 0.80
-            color = G3 if r < 2 else G2 if r < 6 else G1
-            alpha = 0.25 + 0.72 * reveal
-            billboard(hchar(2400+r*17+c, c, tick+r), x, -2.94, z,
-                      0.12 if r > 4 else 0.14, color, alpha, rot_x=-90)
+        self.temps = {
+            "OUTSIDE": round(random.uniform(76.0, 88.0), 1),
+            "INSIDE": round(random.uniform(69.0, 75.0), 1),
+            "FRONT ROOM": round(random.uniform(71.0, 79.0), 1),
+            "BEDROOM": round(random.uniform(66.0, 73.0), 1),
+        }
+        self.bounds = {
+            "OUTSIDE": (65.0, 96.0, 0.9),
+            "INSIDE": (67.0, 78.0, 0.35),
+            "FRONT ROOM": (68.0, 83.0, 0.45),
+            "BEDROOM": (64.0, 77.0, 0.40),
+        }
 
+        used = set()
+        for label in LABELS:
+            while self.temps[label] in used:
+                lo, hi, _ = self.bounds[label]
+                self.temps[label] = round(clamp(self.temps[label] + 0.3, lo, hi), 1)
+            used.add(self.temps[label])
 
-def draw_building(x, z, w, h, seed, t, reveal, side=0):
-    y0 = -2.95
-    y1 = y0 + h
-    # opaque city shell fades as code reveal increases
-    shell_alpha = clamp(1.0 - reveal * 0.82)
-    shell = CITY_DARK if seed % 2 else CITY_MID
-    quad(x-w/2, y0, x+w/2, y1, z, shell, shell_alpha)
+        self.scene_index = 0
+        self.scene_started = time.monotonic()
+        self.last_temp_drift = self.scene_started
+        self.sand.reset(LABELS[self.scene_index], self.temps[LABELS[self.scene_index]])
 
-    # edge/wireframe emerges through the shell
-    edge = G2 if reveal > 0.55 else CITY_EDGE
-    box_outline(x-w/2, y0, x+w/2, y1, z+0.015, edge,
-                1.0 + reveal * 1.5, 0.45 + 0.55*reveal)
+    def drift_temperatures(self):
+        for label in LABELS:
+            lo, hi, max_step = self.bounds[label]
+            step = random.choice((-1, -0.5, 0, 0, 0.5, 1)) * max_step
+            self.temps[label] = round(clamp(self.temps[label] + step, lo, hi), 1)
 
-    cols = max(2, int(w / 0.58))
-    rows = max(3, int(h / 0.64))
-    tick = int(t * 4.0)
-    for r in range(rows):
-        for c in range(cols):
-            gx = x - w/2 + (c+0.5) * (w/cols)
-            gy = y0 + (r+0.55) * (h/rows)
-            # normal building windows
-            on = ((seed + r*5 + c*7 + int(t*0.7)) % 7) < 3
-            if reveal < 0.72 and on:
-                wc = WARM if seed % 3 == 0 else CITY_EDGE
-                quad(gx-0.08, gy-0.09, gx+0.08, gy+0.09, z+0.025, wc,
-                     0.35 + 0.45*(1.0-reveal))
-            # code underneath the facade
-            if reveal > 0.18 or ((r+c+seed) % 6 == 0):
-                alpha = clamp(0.15 + reveal*0.95)
-                col = HEAD if (r+c+tick+seed) % 11 == 0 else G3 if reveal > 0.6 else G1
-                billboard(hchar(seed+c*13, r, tick), gx, gy, z+0.035,
-                          0.105, col, alpha)
+        used = set()
+        for label in LABELS:
+            while self.temps[label] in used:
+                lo, hi, _ = self.bounds[label]
+                self.temps[label] = round(clamp(self.temps[label] + 0.2, lo, hi), 1)
+            used.add(self.temps[label])
 
-    # vertical code stream dripping off some facades
-    if reveal > 0.35:
-        for c in range(0, cols, 2):
-            gx = x - w/2 + (c+0.5)*(w/cols)
-            head = y1 - ((t*(0.45+(c%3)*0.09)+c*0.5) % max(1.0,h))
-            for i in range(5):
-                gy = head - i*0.42
-                if gy < y0: gy += h
-                billboard(hchar(seed+500+c, i, tick), gx, gy, z+0.05,
-                          0.095, HEAD if i==0 else G2, 0.45+0.5*reveal)
+    def draw_clock(self):
+        now = datetime.now()
+        clock_text = now.strftime("%I:%M").lstrip("0")
+        ampm = now.strftime("%p")
 
+        img = self.clock_font.render(clock_text, True, GREEN)
+        rect = img.get_rect(center=(W // 2 - 12, 34))
 
-def draw_city(t, reveal):
-    # Near facades make the street feel surrounded, distant ones add scale.
-    buildings = [
-        (-5.55,-7.0,2.7,5.8,101), (-4.0,-9.5,2.1,4.8,102),
-        (-2.7,-12.0,1.7,3.8,103), (-1.65,-15.0,1.3,3.0,104),
-        ( 1.65,-15.0,1.3,3.1,105), ( 2.75,-12.0,1.7,3.9,106),
-        ( 4.05,-9.5,2.1,5.0,107), ( 5.60,-7.0,2.8,6.0,108),
-        (-5.4,-18.0,3.4,6.4,109), (5.4,-18.0,3.4,6.6,110),
-        (-3.0,-23.0,2.6,5.0,111), (3.1,-23.0,2.7,5.4,112),
-    ]
-    for b in buildings:
-        draw_building(*b, t=t, reveal=reveal)
+        shadow = self.clock_font.render(clock_text, True, (0, 55, 20))
+        self.screen.blit(shadow, rect.move(2, 2))
+        self.screen.blit(img, rect)
 
-    # utility lines / elevated structure-like geometry
-    for y in (-0.4, 0.25, 0.95):
-        line(-6.3, y, -10.0, 6.3, y, -10.0,
-             G1 if reveal > 0.5 else CITY_EDGE, 1.0, 0.40+0.45*reveal)
+        am = self.ampm_font.render(ampm, True, GREEN)
+        self.screen.blit(am, am.get_rect(midleft=(rect.right + 7, rect.centery + 4)))
 
+        pygame.draw.line(self.screen, (0, 155, 52), (65, 63), (W - 65, 63), 1)
 
-def draw_portal(t, reveal):
-    """Persistent distant door/corridor instead of a separate portal scene."""
-    z = -27.0
-    pulse = 0.75 + 0.25*math.sin(t*3.2)
-    visibility = 0.22 + 0.78*reveal
-    c = (0.10, pulse, 0.42)
-    # doorway frame
-    quad(-1.65,-2.9,-1.40,2.2,z,c,visibility)
-    quad( 1.40,-2.9, 1.65,2.2,z,c,visibility)
-    quad(-1.65,1.95,1.65,2.2,z,c,visibility)
-    # receding corridor ribs
-    for k in range(5):
-        zz = z - k*2.0
-        s = 1.0 + k*0.16
-        box_outline(-1.6*s,-2.85,1.6*s,2.15,zz,G2,1.2,0.30+0.55*reveal)
-    # two silhouettes in the light
-    if reveal > 0.45:
-        for x in (-0.34,0.38):
-            quad(x-0.10,-2.75,x+0.10,-1.5,z+0.3,BLACK,1.0)
-            quad(x-0.17,-1.5,x+0.17,-1.12,z+0.3,BLACK,1.0)
+    def draw_status(self, phase_t):
+        if phase_t >= MELT_END:
+            msg = "MATRIX RAIN"
+        elif phase_t < GATHER_END:
+            msg = "ASSEMBLING"
+        elif phase_t < HOLD_END:
+            msg = "MATRIX ONLINE"
+        else:
+            msg = "DISSOLVING"
 
+        img = self.tiny_font.render(msg, True, GREEN_DIM)
+        self.screen.blit(img, img.get_rect(center=(W // 2, H - 10)))
 
-def draw_foreground_code(t, reveal):
-    """Close code curtains pass the camera during reveal to sell 3D depth."""
-    if reveal < 0.45:
-        return
-    tick = int(t*8)
-    for side in (-1, 1):
-        base_x = side * (5.25 - 0.6*math.sin(t*0.25))
-        for col in range(3):
-            z = -4.7 - col*2.3
-            head = 3.6 - ((t*(0.7+col*0.1)+col*1.1) % 7.2)
-            for i in range(8):
-                y = head + i*0.58
-                if y > 3.7: y -= 7.5
-                colr = HEAD if i==0 else G3 if i<3 else G1
-                billboard(hchar(7000+col+(10 if side>0 else 0), i, tick),
-                          base_x, y, z, 0.20, colr, 0.35+0.60*reveal,
-                          rot_y=(-90 if side>0 else 90))
+    def next_scene(self, now):
+        self.scene_index = (self.scene_index + 1) % len(LABELS)
+        label = LABELS[self.scene_index]
+        self.sand.reset(label, self.temps[label])
+        self.scene_started = now
 
+    def run(self):
+        running = True
+        last = time.monotonic()
 
-def draw_operator_echo(t, reveal):
-    """Very brief monitor echo near peak reveal; part of the same world, not a new scene."""
-    p = t % CYCLE
-    if not (13.0 < p < 15.2):
-        return
-    strength = math.sin((p-13.0)/2.2*math.pi)
-    if strength <= 0: return
-    glPushMatrix()
-    glTranslatef(0.0, 0.15, -4.8)
-    positions = [(-3.5,1.55),(0.0,1.8),(3.5,1.55),(-2.2,-0.25),(2.2,-0.25)]
-    tick = int(t*7)
-    for j,(cx,cy) in enumerate(positions):
-        box_outline(cx-1.05,cy-0.62,cx+1.05,cy+0.62,0,G2,1.5,0.28*strength)
-        for c in range(5):
-            for r in range(3):
-                if (c+r+j)%3==0: continue
-                billboard(hchar(8000+j*20+c,r,tick), cx-0.75+c*0.38,
-                          cy+0.36-r*0.34,0.02,0.085,G2,0.30*strength)
-    glPopMatrix()
-
-
-def draw_phase_label(name, reveal):
-    color = G2 if reveal < 0.6 else HEAD
-    for i,ch in enumerate(name):
-        if ch == " ":
-            continue
-        if ch in GLYPHS:
-            billboard(ch, -5.85+i*0.30, 3.35, -5.0, 0.115, color, 0.55)
-
-
-def flash_overlay(color, alpha):
-    glDisable(GL_DEPTH_TEST)
-    glDisable(GL_TEXTURE_2D)
-    glMatrixMode(GL_PROJECTION); glLoadIdentity()
-    glMatrixMode(GL_MODELVIEW); glLoadIdentity()
-    glColor4f(color[0],color[1],color[2],alpha)
-    glBegin(GL_QUADS)
-    glVertex3f(-1,-1,0); glVertex3f(1,-1,0); glVertex3f(1,1,0); glVertex3f(-1,1,0)
-    glEnd()
-    glEnable(GL_TEXTURE_2D)
-    glEnable(GL_DEPTH_TEST)
-
-
-def main():
-    pygame.init(); pygame.font.init()
-    pygame.display.set_caption("Matrix Simulation World V11")
-    pygame.display.set_mode((W,H), FULLSCREEN|OPENGL|DOUBLEBUF)
-    pygame.mouse.set_visible(False)
-
-    glViewport(0,0,W,H)
-    glClearColor(0,0,0,1)
-    glEnable(GL_DEPTH_TEST)
-    glEnable(GL_TEXTURE_2D)
-    glEnable(GL_BLEND)
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-    glEnable(GL_ALPHA_TEST)
-    glAlphaFunc(GL_GREATER,0.08)
-
-    tex = make_atlas()
-    clock = pygame.time.Clock()
-    start = time.monotonic()
-    running = True
-    prev_phase = ""
-    flash_until = -1.0
-    flash_color = HEAD
-
-    try:
         while running:
-            t = time.monotonic()-start
-            for e in pygame.event.get():
-                if e.type == QUIT: running=False
-                elif e.type == KEYDOWN and e.key in (K_ESCAPE,K_q): running=False
+            now = time.monotonic()
+            dt = min(0.05, now - last)
+            last = now
 
-            reveal = phase_amount(t)
-            pname = phase_name(t)
-            if pname != prev_phase:
-                flash_until = t + 0.045
-                flash_color = RED if pname == "REVEALED" else HEAD
-                prev_phase = pname
+            for event in pygame.event.get():
+                if event.type == QUIT:
+                    running = False
+                elif event.type == KEYDOWN and event.key in (K_ESCAPE, K_q):
+                    running = False
 
-            glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT)
-            glMatrixMode(GL_PROJECTION); glLoadIdentity()
-            gluPerspective(67.0,W/float(H),0.1,90.0)
-            glMatrixMode(GL_MODELVIEW); glLoadIdentity()
+            if now - self.last_temp_drift >= TEMP_DRIFT_SECONDS:
+                self.drift_temperatures()
+                self.last_temp_drift = now
 
-            # slow shoulder-level drift like exploring a city, not flying through a tube
-            camx = math.sin(t*0.19)*0.32
-            camy = math.sin(t*0.13+0.8)*0.10
-            yaw = math.sin(t*0.11)*2.2
-            roll = math.sin(t*0.07)*0.7
-            glRotatef(roll,0,0,1)
-            glRotatef(yaw,0,1,0)
-            glTranslatef(-camx,-camy,0)
+            phase_t = now - self.scene_started
+            if phase_t >= SCENE_SECONDS:
+                self.next_scene(now)
+                phase_t = 0.0
 
-            glBindTexture(GL_TEXTURE_2D,tex)
-            draw_sky_rain(t,reveal)
-            draw_street(t,reveal)
-            draw_city(t,reveal)
-            draw_portal(t,reveal)
-            draw_foreground_code(t,reveal)
-            draw_operator_echo(t,reveal)
-            draw_phase_label(pname,reveal)
+            self.rain.update(dt)
 
-            # subtle reality-tear flashes at key transitions
-            p = t % CYCLE
-            if 10.85 < p < 10.92 or 15.90 < p < 15.97:
-                flash_overlay(HEAD,0.28)
-            elif t < flash_until:
-                flash_overlay(flash_color,0.38)
+            self.screen.fill(BLACK)
+
+            if GATHER_END <= phase_t < HOLD_END:
+                rain_dim = 0.40
+            elif HOLD_END <= phase_t < MELT_END:
+                rain_dim = 0.62
+            else:
+                rain_dim = 0.84
+
+            self.rain.draw(self.screen, now, rain_dim)
+            self.draw_clock()
+            self.sand.draw(self.screen, phase_t)
+            self.draw_status(phase_t)
 
             pygame.display.flip()
-            clock.tick(60)
-    finally:
-        try: glDeleteTextures([tex])
-        except Exception: pass
+            self.clock.tick(FPS)
+
         pygame.quit()
 
 
 if __name__ == "__main__":
-    main()
+    MatrixHub().run()
