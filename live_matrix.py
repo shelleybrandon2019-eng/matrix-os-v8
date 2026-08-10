@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
-"""Matrix Live V10.1 — visible world/field renderer for Pi 4 480x320.
+"""Matrix Live V11 — continuous SIMULATION WORLD for Pi 4 / 480x320.
 
-Four scenes cycle every 4 seconds (16 seconds total):
-FIELD -> CITY -> PORTAL -> OPERATOR
+One persistent world, not a scene carousel:
+- believable dark city/street depth
+- buildings, windows, road, reflections, distant portal
+- Matrix code exists inside the world at all times
+- simulation phases continuously bleed/reveal/rebuild the world
+- no tunnel, no starburst, no waiting for separate scenes
 
-Design goals:
-- Always-visible Matrix code field (never a mostly black screen)
-- Big readable glyphs at 480x320
-- Strong RGB565-friendly greens and hard black
-- No radial/tunnel streaking
-- Scene structures are large enough to read on the physical 3.5" LCD
+Cycle (~24 sec): CITY -> CODE BLEED -> FULL REVEAL -> REBUILD -> CITY
 """
 import math
 import os
-import random
 import time
 
 os.environ.setdefault("SDL_VIDEO_CENTERED", "1")
@@ -22,13 +20,14 @@ import pygame
 from pygame.locals import DOUBLEBUF, FULLSCREEN, OPENGL, QUIT, KEYDOWN, K_ESCAPE, K_q
 from OpenGL.GL import (
     GL_ALPHA_TEST, GL_BLEND, GL_COLOR_BUFFER_BIT, GL_DEPTH_BUFFER_BIT, GL_DEPTH_TEST,
-    GL_GREATER, GL_LINES, GL_LINE_LOOP, GL_MODELVIEW, GL_NEAREST, GL_ONE_MINUS_SRC_ALPHA,
-    GL_PROJECTION, GL_QUADS, GL_RGBA, GL_SRC_ALPHA, GL_TEXTURE_2D,
-    GL_TEXTURE_MAG_FILTER, GL_TEXTURE_MIN_FILTER, GL_UNSIGNED_BYTE,
+    GL_GREATER, GL_LINES, GL_LINE_LOOP, GL_MODELVIEW, GL_NEAREST,
+    GL_ONE_MINUS_SRC_ALPHA, GL_PROJECTION, GL_QUADS, GL_RGBA, GL_SRC_ALPHA,
+    GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_TEXTURE_MIN_FILTER, GL_UNSIGNED_BYTE,
     glAlphaFunc, glBegin, glBindTexture, glBlendFunc, glClear, glClearColor,
     glColor4f, glDeleteTextures, glDisable, glEnable, glEnd, glGenTextures,
-    glLineWidth, glLoadIdentity, glMatrixMode, glPopMatrix, glPushMatrix, glRotatef,
-    glTexCoord2f, glTexImage2D, glTexParameteri, glTranslatef, glVertex3f, glViewport,
+    glLineWidth, glLoadIdentity, glMatrixMode, glPopMatrix, glPushMatrix,
+    glRotatef, glTexCoord2f, glTexImage2D, glTexParameteri, glTranslatef,
+    glVertex3f, glViewport,
 )
 from OpenGL.GLU import gluPerspective
 
@@ -37,18 +36,55 @@ GLYPHS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ<>+-*/{}[]:;=#$%@!?|"
 ATLAS_COLS = 8
 ATLAS_ROWS = math.ceil(len(GLYPHS) / ATLAS_COLS)
 
-# Hard, widely separated shades that survive the physical RGB565 LCD.
-G0 = (0.00, 0.34, 0.00)
-G1 = (0.00, 0.58, 0.02)
-G2 = (0.02, 0.82, 0.05)
-G3 = (0.10, 1.00, 0.18)
-HEAD = (0.78, 1.00, 0.80)
-PORTAL = (0.15, 1.00, 0.55)
-DARK = (0.00, 0.16, 0.00)
-RED = (1.00, 0.04, 0.02)
+# High-contrast palette for the physical SPI LCD.
+BLACK = (0.0, 0.0, 0.0)
+CITY_DARK = (0.00, 0.055, 0.025)
+CITY_MID = (0.00, 0.11, 0.045)
+CITY_EDGE = (0.02, 0.30, 0.10)
+G0 = (0.00, 0.30, 0.00)
+G1 = (0.00, 0.52, 0.02)
+G2 = (0.02, 0.78, 0.05)
+G3 = (0.08, 1.00, 0.16)
+HEAD = (0.72, 1.00, 0.76)
+PORTAL = (0.24, 1.00, 0.68)
+WARM = (0.82, 0.78, 0.34)
+RED = (1.0, 0.05, 0.03)
 
-SCENES = ("FIELD", "CITY", "PORTAL", "OPERATOR")
-SCENE_SECONDS = 4.0
+CYCLE = 24.0
+
+
+def clamp(v, lo=0.0, hi=1.0):
+    return max(lo, min(hi, v))
+
+
+def smoothstep(a, b, x):
+    if a == b:
+        return 0.0
+    t = clamp((x - a) / (b - a))
+    return t * t * (3.0 - 2.0 * t)
+
+
+def phase_amount(t):
+    """0 = mostly real city, 1 = fully exposed Matrix code."""
+    p = t % CYCLE
+    if p < 6.0:      # city breathing
+        return 0.12 + 0.05 * math.sin(p * 0.9)
+    if p < 11.0:     # code bleeds through
+        return 0.12 + 0.88 * smoothstep(6.0, 11.0, p)
+    if p < 16.0:     # full reveal
+        return 1.0
+    if p < 22.0:     # rebuild simulation
+        return 1.0 - 0.88 * smoothstep(16.0, 22.0, p)
+    return 0.12
+
+
+def phase_name(t):
+    p = t % CYCLE
+    if p < 6: return "SIMULATION"
+    if p < 11: return "CODE BLEED"
+    if p < 16: return "REVEALED"
+    if p < 22: return "REBUILD"
+    return "SIMULATION"
 
 
 def pick_font(size=32):
@@ -84,29 +120,24 @@ def glyph_uv(ch):
     if i < 0:
         i = 0
     cx, cy = i % ATLAS_COLS, i // ATLAS_COLS
-    return (
-        cx / ATLAS_COLS,
-        1.0 - ((cy + 1) / ATLAS_ROWS),
-        (cx + 1) / ATLAS_COLS,
-        1.0 - (cy / ATLAS_ROWS),
-    )
+    return (cx / ATLAS_COLS,
+            1.0 - ((cy + 1) / ATLAS_ROWS),
+            (cx + 1) / ATLAS_COLS,
+            1.0 - (cy / ATLAS_ROWS))
 
 
-def hash_char(seed, idx, tick):
+def hchar(seed, idx, tick):
     n = (seed * 1103515245 + idx * 12345 + tick * 2654435761) & 0xFFFFFFFF
     return GLYPHS[n % len(GLYPHS)]
 
 
 def billboard(ch, x, y, z, size, color=G3, alpha=1.0, rot_y=0.0, rot_x=0.0):
     u0, v0, u1, v1 = glyph_uv(ch)
-    hw = size * 0.52
-    hh = size
+    hw, hh = size * 0.52, size
     glPushMatrix()
     glTranslatef(x, y, z)
-    if rot_y:
-        glRotatef(rot_y, 0, 1, 0)
-    if rot_x:
-        glRotatef(rot_x, 1, 0, 0)
+    if rot_y: glRotatef(rot_y, 0, 1, 0)
+    if rot_x: glRotatef(rot_x, 1, 0, 0)
     glColor4f(color[0], color[1], color[2], alpha)
     glBegin(GL_QUADS)
     glTexCoord2f(u0, v0); glVertex3f(-hw, -hh, 0)
@@ -117,7 +148,7 @@ def billboard(ch, x, y, z, size, color=G3, alpha=1.0, rot_y=0.0, rot_x=0.0):
     glPopMatrix()
 
 
-def solid_quad(x0, y0, x1, y1, z, color, alpha=1.0):
+def quad(x0, y0, x1, y1, z, color, alpha=1.0):
     glDisable(GL_TEXTURE_2D)
     glColor4f(color[0], color[1], color[2], alpha)
     glBegin(GL_QUADS)
@@ -127,10 +158,20 @@ def solid_quad(x0, y0, x1, y1, z, color, alpha=1.0):
     glEnable(GL_TEXTURE_2D)
 
 
-def line_box(x0, y0, x1, y1, z, color=G2, width=2.0):
+def line(x0, y0, z0, x1, y1, z1, color, width=1.0, alpha=1.0):
     glDisable(GL_TEXTURE_2D)
     glLineWidth(width)
-    glColor4f(color[0], color[1], color[2], 1.0)
+    glColor4f(color[0], color[1], color[2], alpha)
+    glBegin(GL_LINES)
+    glVertex3f(x0, y0, z0); glVertex3f(x1, y1, z1)
+    glEnd()
+    glEnable(GL_TEXTURE_2D)
+
+
+def box_outline(x0, y0, x1, y1, z, color, width=1.4, alpha=1.0):
+    glDisable(GL_TEXTURE_2D)
+    glLineWidth(width)
+    glColor4f(color[0], color[1], color[2], alpha)
     glBegin(GL_LINE_LOOP)
     glVertex3f(x0, y0, z); glVertex3f(x1, y0, z)
     glVertex3f(x1, y1, z); glVertex3f(x0, y1, z)
@@ -138,176 +179,203 @@ def line_box(x0, y0, x1, y1, z, color=G2, width=2.0):
     glEnable(GL_TEXTURE_2D)
 
 
-def draw_background_rain(t, density=32, bright=True):
-    """Persistent front-facing rain so every scene has visible Matrix texture."""
-    tick = int(t * 7)
-    cols = density
+def draw_sky_rain(t, reveal):
+    """Distant code rain always visible; stronger when reality breaks."""
+    tick = int(t * 7.0)
+    cols = 34
     for c in range(cols):
-        x = -6.4 + c * (12.8 / max(1, cols - 1))
-        z = -8.0 - ((c * 3.7) % 25.0)
-        speed = 0.70 + ((c * 11) % 9) * 0.06
-        phase = (c * 1.37) % 7.4
-        head_y = 4.0 - ((t * speed + phase) % 7.8)
-        length = 7 + (c % 5)
+        x = -7.2 + c * 14.4 / (cols - 1)
+        z = -15.0 - ((c * 4.1) % 26.0)
+        speed = 0.50 + (c % 7) * 0.055
+        head = 4.5 - ((t * speed + c * 0.43) % 9.0)
+        length = 5 + int(5 * reveal) + (c % 3)
         for i in range(length):
-            y = head_y + i * 0.58
-            if y > 4.0:
-                y -= 8.2
-            color = HEAD if i == 0 else (G3 if i < 3 else G2 if i < 6 else G1)
-            if not bright and i > 3:
-                color = G0
-            billboard(hash_char(1000 + c, i, tick + i // 2), x, y, z, 0.19, color)
+            y = head + i * 0.58
+            if y > 4.4: y -= 9.0
+            if i == 0:
+                color = HEAD
+            elif i < 3:
+                color = G3 if reveal > 0.45 else G2
+            else:
+                color = G2 if reveal > 0.7 else G0
+            alpha = 0.32 + 0.68 * reveal if i > 2 else 0.65 + 0.35 * reveal
+            billboard(hchar(1200+c, i, tick+i//2), x, y, z, 0.17, color, alpha)
 
 
-def draw_floor_field(t):
-    """Perspective floor made from moving glyph rows, not radial streaks."""
-    tick = int(t * 5)
-    for row in range(12):
-        z = -4.8 - row * 2.1
-        y = -3.18
-        for c in range(13):
-            x = -5.8 + c * 0.96
-            if (c + row) % 4 == 0:
-                continue
-            ch = hash_char(3000 + row * 20 + c, c, tick + row)
-            color = G3 if row < 3 else G2 if row < 7 else G1
-            billboard(ch, x, y, z, 0.16 if row < 5 else 0.14, color, rot_x=-90)
+def draw_street(t, reveal):
+    # road body
+    quad(-6.3, -3.18, 6.3, -2.92, -6.0, CITY_DARK, 1.0)
 
-
-def draw_field_scene(t):
-    draw_background_rain(t, 38, True)
-    draw_floor_field(t)
-    # Big drifting curtains left/right to make it feel like a FIELD instead of wallpaper.
-    tick = int(t * 6)
+    # road/curb perspective lines
     for side in (-1, 1):
-        x = side * 4.8
-        for col in range(4):
-            z = -7.0 - col * 5.2
-            for i in range(9):
-                y = 3.4 - ((i * 0.76 + t * (0.45 + col * 0.05)) % 7.0)
-                ch = hash_char(4100 + side * 10 + col, i, tick)
-                billboard(ch, x, y, z, 0.22, HEAD if i == 0 else G3, rot_y=(-90 if side > 0 else 90))
+        line(side * 2.1, -3.0, -5.0, side * 5.8, -3.0, -34.0,
+             G1 if reveal > 0.5 else CITY_EDGE, 2.0, 0.75)
+        line(side * 3.2, -2.98, -5.0, side * 7.5, -2.98, -34.0,
+             G0 if reveal > 0.35 else CITY_MID, 1.0, 0.7)
+
+    # center lane broken marks
+    for k in range(9):
+        z0 = -6.0 - k * 3.0
+        z1 = z0 - 1.2
+        line(0.0, -2.98, z0, 0.0, -2.98, z1,
+             G2 if reveal > 0.65 else CITY_EDGE, 2.0, 0.75)
+
+    # Matrix glyph reflections crawling across the wet street
+    tick = int(t * 4.5)
+    rows = 9
+    for r in range(rows):
+        z = -6.0 - r * 2.8
+        for c in range(13):
+            if (c + r + tick) % 4 == 0 and reveal < 0.55:
+                continue
+            x = -4.8 + c * 0.80
+            color = G3 if r < 2 else G2 if r < 6 else G1
+            alpha = 0.25 + 0.72 * reveal
+            billboard(hchar(2400+r*17+c, c, tick+r), x, -2.94, z,
+                      0.12 if r > 4 else 0.14, color, alpha, rot_x=-90)
 
 
-def draw_building(x, z, w, h, seed, t):
-    """Large wireframe building facade with code windows."""
-    y0 = -3.0
+def draw_building(x, z, w, h, seed, t, reveal, side=0):
+    y0 = -2.95
     y1 = y0 + h
-    line_box(x - w/2, y0, x + w/2, y1, z, G2, 2.2)
-    tick = int(t * 4)
-    cols = max(2, int(w / 0.65))
-    rows = max(3, int(h / 0.75))
+    # opaque city shell fades as code reveal increases
+    shell_alpha = clamp(1.0 - reveal * 0.82)
+    shell = CITY_DARK if seed % 2 else CITY_MID
+    quad(x-w/2, y0, x+w/2, y1, z, shell, shell_alpha)
+
+    # edge/wireframe emerges through the shell
+    edge = G2 if reveal > 0.55 else CITY_EDGE
+    box_outline(x-w/2, y0, x+w/2, y1, z+0.015, edge,
+                1.0 + reveal * 1.5, 0.45 + 0.55*reveal)
+
+    cols = max(2, int(w / 0.58))
+    rows = max(3, int(h / 0.64))
+    tick = int(t * 4.0)
     for r in range(rows):
         for c in range(cols):
-            if (r + c + seed) % 3 == 0:
-                continue
-            gx = x - w/2 + 0.35 + c * (w / cols)
-            gy = y0 + 0.38 + r * (h / rows)
-            col = G3 if (r + c + tick) % 7 == 0 else G1
-            billboard(hash_char(seed, r * 13 + c, tick), gx, gy, z + 0.02, 0.11, col)
+            gx = x - w/2 + (c+0.5) * (w/cols)
+            gy = y0 + (r+0.55) * (h/rows)
+            # normal building windows
+            on = ((seed + r*5 + c*7 + int(t*0.7)) % 7) < 3
+            if reveal < 0.72 and on:
+                wc = WARM if seed % 3 == 0 else CITY_EDGE
+                quad(gx-0.08, gy-0.09, gx+0.08, gy+0.09, z+0.025, wc,
+                     0.35 + 0.45*(1.0-reveal))
+            # code underneath the facade
+            if reveal > 0.18 or ((r+c+seed) % 6 == 0):
+                alpha = clamp(0.15 + reveal*0.95)
+                col = HEAD if (r+c+tick+seed) % 11 == 0 else G3 if reveal > 0.6 else G1
+                billboard(hchar(seed+c*13, r, tick), gx, gy, z+0.035,
+                          0.105, col, alpha)
+
+    # vertical code stream dripping off some facades
+    if reveal > 0.35:
+        for c in range(0, cols, 2):
+            gx = x - w/2 + (c+0.5)*(w/cols)
+            head = y1 - ((t*(0.45+(c%3)*0.09)+c*0.5) % max(1.0,h))
+            for i in range(5):
+                gy = head - i*0.42
+                if gy < y0: gy += h
+                billboard(hchar(seed+500+c, i, tick), gx, gy, z+0.05,
+                          0.095, HEAD if i==0 else G2, 0.45+0.5*reveal)
 
 
-def draw_city_scene(t):
-    draw_background_rain(t, 26, False)
-    draw_floor_field(t)
+def draw_city(t, reveal):
+    # Near facades make the street feel surrounded, distant ones add scale.
     buildings = [
-        (-5.1,-8.0,2.0,5.3,10), (-3.4,-10.0,1.8,3.8,20),
-        (-1.9,-13.0,1.6,3.0,30), (1.8,-13.0,1.7,3.1,40),
-        (3.5,-10.5,1.9,4.3,50), (5.2,-8.3,2.2,5.5,60),
-        (-4.8,-18.0,2.8,6.0,70), (4.8,-18.0,2.8,6.2,80),
+        (-5.55,-7.0,2.7,5.8,101), (-4.0,-9.5,2.1,4.8,102),
+        (-2.7,-12.0,1.7,3.8,103), (-1.65,-15.0,1.3,3.0,104),
+        ( 1.65,-15.0,1.3,3.1,105), ( 2.75,-12.0,1.7,3.9,106),
+        ( 4.05,-9.5,2.1,5.0,107), ( 5.60,-7.0,2.8,6.0,108),
+        (-5.4,-18.0,3.4,6.4,109), (5.4,-18.0,3.4,6.6,110),
+        (-3.0,-23.0,2.6,5.0,111), (3.1,-23.0,2.7,5.4,112),
     ]
     for b in buildings:
-        draw_building(*b, t=t)
-    # Lone figure in the street, made much larger than before.
-    solid_quad(-0.20, -3.0, 0.20, -1.45, -7.0, (0.00, 0.05, 0.00))
-    solid_quad(-0.34, -1.45, 0.34, -0.90, -7.0, (0.00, 0.05, 0.00))
+        draw_building(*b, t=t, reveal=reveal)
+
+    # utility lines / elevated structure-like geometry
+    for y in (-0.4, 0.25, 0.95):
+        line(-6.3, y, -10.0, 6.3, y, -10.0,
+             G1 if reveal > 0.5 else CITY_EDGE, 1.0, 0.40+0.45*reveal)
 
 
-def draw_person(x, z, scale=1.0):
-    solid_quad(x - 0.12*scale, -3.0, x + 0.12*scale, -1.75, z, (0.0, 0.04, 0.0))
-    solid_quad(x - 0.20*scale, -1.75, x + 0.20*scale, -1.35, z, (0.0, 0.04, 0.0))
+def draw_portal(t, reveal):
+    """Persistent distant door/corridor instead of a separate portal scene."""
+    z = -27.0
+    pulse = 0.75 + 0.25*math.sin(t*3.2)
+    visibility = 0.22 + 0.78*reveal
+    c = (0.10, pulse, 0.42)
+    # doorway frame
+    quad(-1.65,-2.9,-1.40,2.2,z,c,visibility)
+    quad( 1.40,-2.9, 1.65,2.2,z,c,visibility)
+    quad(-1.65,1.95,1.65,2.2,z,c,visibility)
+    # receding corridor ribs
+    for k in range(5):
+        zz = z - k*2.0
+        s = 1.0 + k*0.16
+        box_outline(-1.6*s,-2.85,1.6*s,2.15,zz,G2,1.2,0.30+0.55*reveal)
+    # two silhouettes in the light
+    if reveal > 0.45:
+        for x in (-0.34,0.38):
+            quad(x-0.10,-2.75,x+0.10,-1.5,z+0.3,BLACK,1.0)
+            quad(x-0.17,-1.5,x+0.17,-1.12,z+0.3,BLACK,1.0)
 
 
-def draw_portal_scene(t):
-    draw_background_rain(t, 36, True)
-    # Wide bright doorway, closer and bigger.
-    z = -8.0
-    glow = 0.78 + 0.22 * math.sin(t * 5.0)
-    c = (0.10, glow, 0.38)
-    # halo
-    solid_quad(-2.25, -3.05, 2.25, 2.75, z + 0.18, (0.00, 0.28, 0.08), 0.85)
-    # doorway body
-    solid_quad(-2.0, -3.0, -1.58, 2.45, z, c)
-    solid_quad( 1.58, -3.0,  2.0, 2.45, z, c)
-    solid_quad(-2.0, 2.05, 2.0, 2.45, z, c)
-    # interior code rain
-    tick = int(t * 8)
-    for col in range(9):
-        x = -1.45 + col * 0.36
-        for i in range(8):
-            y = 1.8 - ((i * 0.62 + t * (0.65 + col*0.03)) % 4.8)
-            billboard(hash_char(5000 + col, i, tick), x, y, z + 0.05, 0.16,
-                      HEAD if i == 0 else G3)
-    draw_person(-0.42, z + 0.30, 1.25)
-    draw_person(0.46, z + 0.30, 1.25)
+def draw_foreground_code(t, reveal):
+    """Close code curtains pass the camera during reveal to sell 3D depth."""
+    if reveal < 0.45:
+        return
+    tick = int(t*8)
+    for side in (-1, 1):
+        base_x = side * (5.25 - 0.6*math.sin(t*0.25))
+        for col in range(3):
+            z = -4.7 - col*2.3
+            head = 3.6 - ((t*(0.7+col*0.1)+col*1.1) % 7.2)
+            for i in range(8):
+                y = head + i*0.58
+                if y > 3.7: y -= 7.5
+                colr = HEAD if i==0 else G3 if i<3 else G1
+                billboard(hchar(7000+col+(10 if side>0 else 0), i, tick),
+                          base_x, y, z, 0.20, colr, 0.35+0.60*reveal,
+                          rot_y=(-90 if side>0 else 90))
 
 
-def draw_monitor(cx, cy, z, w, h, seed, t, rot=0):
+def draw_operator_echo(t, reveal):
+    """Very brief monitor echo near peak reveal; part of the same world, not a new scene."""
+    p = t % CYCLE
+    if not (13.0 < p < 15.2):
+        return
+    strength = math.sin((p-13.0)/2.2*math.pi)
+    if strength <= 0: return
     glPushMatrix()
-    glTranslatef(cx, cy, z)
-    if rot:
-        glRotatef(rot, 0, 1, 0)
-    line_box(-w/2, -h/2, w/2, h/2, 0, G3, 2.2)
-    tick = int(t * 8)
-    cols = max(3, int(w / 0.42))
-    rows = max(3, int(h / 0.52))
-    for c in range(cols):
-        for r in range(rows):
-            if (c + r + seed) % 4 == 0:
-                continue
-            x = -w/2 + 0.22 + c * (w / cols)
-            y = h/2 - 0.25 - r * (h / rows)
-            billboard(hash_char(seed + c, r, tick), x, y, 0.01, 0.10,
-                      HEAD if r == 0 and c % 2 == 0 else G2)
+    glTranslatef(0.0, 0.15, -4.8)
+    positions = [(-3.5,1.55),(0.0,1.8),(3.5,1.55),(-2.2,-0.25),(2.2,-0.25)]
+    tick = int(t*7)
+    for j,(cx,cy) in enumerate(positions):
+        box_outline(cx-1.05,cy-0.62,cx+1.05,cy+0.62,0,G2,1.5,0.28*strength)
+        for c in range(5):
+            for r in range(3):
+                if (c+r+j)%3==0: continue
+                billboard(hchar(8000+j*20+c,r,tick), cx-0.75+c*0.38,
+                          cy+0.36-r*0.34,0.02,0.085,G2,0.30*strength)
     glPopMatrix()
 
 
-def draw_operator_scene(t):
-    # Dense backdrop so operator room is immediately obvious.
-    draw_background_rain(t, 30, True)
-    monitors = [
-        (-3.8, 1.55, -7.5, 2.4, 1.55, 610, 18),
-        (-1.25, 1.80, -6.7, 2.4, 1.55, 620, 7),
-        ( 1.25, 1.80, -6.7, 2.4, 1.55, 630, -7),
-        ( 3.8, 1.55, -7.5, 2.4, 1.55, 640, -18),
-        (-3.0,-0.55, -6.5, 2.2, 1.45, 650, 13),
-        ( 0.0,-0.45, -6.2, 2.4, 1.55, 660, 0),
-        ( 3.0,-0.55, -6.5, 2.2, 1.45, 670, -13),
-    ]
-    for m in monitors:
-        draw_monitor(*m, t=t)
-    # operator silhouette in foreground
-    solid_quad(-0.42, -3.15, 0.42, -1.20, -4.5, (0.0, 0.03, 0.0))
-    solid_quad(-0.58, -1.20, 0.58, -0.45, -4.5, (0.0, 0.03, 0.0))
-
-
-def draw_scene_label(scene):
-    # tiny debug label can be useful on the physical panel; intentionally subtle
-    # Rendered as glyphs along upper-left in world space.
-    for i, ch in enumerate(scene):
+def draw_phase_label(name, reveal):
+    color = G2 if reveal < 0.6 else HEAD
+    for i,ch in enumerate(name):
+        if ch == " ":
+            continue
         if ch in GLYPHS:
-            billboard(ch, -5.6 + i * 0.33, 3.35, -5.2, 0.14, G1)
+            billboard(ch, -5.85+i*0.30, 3.35, -5.0, 0.115, color, 0.55)
 
 
-def flash_overlay(red=False):
+def flash_overlay(color, alpha):
     glDisable(GL_DEPTH_TEST)
     glDisable(GL_TEXTURE_2D)
-    glMatrixMode(GL_PROJECTION)
-    glLoadIdentity()
-    glMatrixMode(GL_MODELVIEW)
-    glLoadIdentity()
-    c = (1.0, 0.12, 0.08) if red else (0.72, 1.0, 0.76)
-    glColor4f(c[0], c[1], c[2], 0.70)
+    glMatrixMode(GL_PROJECTION); glLoadIdentity()
+    glMatrixMode(GL_MODELVIEW); glLoadIdentity()
+    glColor4f(color[0],color[1],color[2],alpha)
     glBegin(GL_QUADS)
     glVertex3f(-1,-1,0); glVertex3f(1,-1,0); glVertex3f(1,1,0); glVertex3f(-1,1,0)
     glEnd()
@@ -316,94 +384,77 @@ def flash_overlay(red=False):
 
 
 def main():
-    pygame.init()
-    pygame.font.init()
-    pygame.display.set_caption("Matrix World Live")
-    pygame.display.set_mode((W, H), FULLSCREEN | OPENGL | DOUBLEBUF)
+    pygame.init(); pygame.font.init()
+    pygame.display.set_caption("Matrix Simulation World V11")
+    pygame.display.set_mode((W,H), FULLSCREEN|OPENGL|DOUBLEBUF)
     pygame.mouse.set_visible(False)
 
-    glViewport(0, 0, W, H)
-    glClearColor(0.0, 0.0, 0.0, 1.0)
+    glViewport(0,0,W,H)
+    glClearColor(0,0,0,1)
     glEnable(GL_DEPTH_TEST)
     glEnable(GL_TEXTURE_2D)
     glEnable(GL_BLEND)
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
     glEnable(GL_ALPHA_TEST)
-    glAlphaFunc(GL_GREATER, 0.12)
+    glAlphaFunc(GL_GREATER,0.08)
 
     tex = make_atlas()
     clock = pygame.time.Clock()
     start = time.monotonic()
-    last_scene = -1
-    flash_until = -1.0
-    red_flash = False
     running = True
+    prev_phase = ""
+    flash_until = -1.0
+    flash_color = HEAD
 
     try:
         while running:
-            now = time.monotonic()
-            t = now - start
+            t = time.monotonic()-start
+            for e in pygame.event.get():
+                if e.type == QUIT: running=False
+                elif e.type == KEYDOWN and e.key in (K_ESCAPE,K_q): running=False
 
-            for event in pygame.event.get():
-                if event.type == QUIT:
-                    running = False
-                elif event.type == KEYDOWN and event.key in (K_ESCAPE, K_q):
-                    running = False
+            reveal = phase_amount(t)
+            pname = phase_name(t)
+            if pname != prev_phase:
+                flash_until = t + 0.045
+                flash_color = RED if pname == "REVEALED" else HEAD
+                prev_phase = pname
 
-            scene_idx = int(t / SCENE_SECONDS) % len(SCENES)
-            scene = SCENES[scene_idx]
-            if scene_idx != last_scene:
-                # short scene-transition flash so changes are obvious.
-                flash_until = t + 0.055
-                red_flash = False
-                last_scene = scene_idx
+            glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT)
+            glMatrixMode(GL_PROJECTION); glLoadIdentity()
+            gluPerspective(67.0,W/float(H),0.1,90.0)
+            glMatrixMode(GL_MODELVIEW); glLoadIdentity()
 
-            # one short corruption hit per full cycle
-            cycle_t = t % (SCENE_SECONDS * len(SCENES))
-            if 14.8 < cycle_t < 14.86:
-                flash_until = t + 0.06
-                red_flash = True
+            # slow shoulder-level drift like exploring a city, not flying through a tube
+            camx = math.sin(t*0.19)*0.32
+            camy = math.sin(t*0.13+0.8)*0.10
+            yaw = math.sin(t*0.11)*2.2
+            roll = math.sin(t*0.07)*0.7
+            glRotatef(roll,0,0,1)
+            glRotatef(yaw,0,1,0)
+            glTranslatef(-camx,-camy,0)
 
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+            glBindTexture(GL_TEXTURE_2D,tex)
+            draw_sky_rain(t,reveal)
+            draw_street(t,reveal)
+            draw_city(t,reveal)
+            draw_portal(t,reveal)
+            draw_foreground_code(t,reveal)
+            draw_operator_echo(t,reveal)
+            draw_phase_label(pname,reveal)
 
-            glMatrixMode(GL_PROJECTION)
-            glLoadIdentity()
-            gluPerspective(66.0, W / float(H), 0.1, 80.0)
-
-            glMatrixMode(GL_MODELVIEW)
-            glLoadIdentity()
-
-            # Camera moves sideways and slightly vertically; it never rushes toward a center point.
-            camx = math.sin(t * 0.31) * 0.36
-            camy = math.sin(t * 0.23 + 1.1) * 0.14
-            glRotatef(math.sin(t * 0.16) * 1.6, 0, 0, 1)
-            glRotatef(math.sin(t * 0.12) * 2.0, 0, 1, 0)
-            glTranslatef(-camx, -camy, 0.0)
-
-            glBindTexture(GL_TEXTURE_2D, tex)
-
-            if scene == "FIELD":
-                draw_field_scene(t)
-            elif scene == "CITY":
-                draw_city_scene(t)
-            elif scene == "PORTAL":
-                draw_portal_scene(t)
-            else:
-                draw_operator_scene(t)
-
-            draw_scene_label(scene)
-
-            if t < flash_until:
-                flash_overlay(red_flash)
+            # subtle reality-tear flashes at key transitions
+            p = t % CYCLE
+            if 10.85 < p < 10.92 or 15.90 < p < 15.97:
+                flash_overlay(HEAD,0.28)
+            elif t < flash_until:
+                flash_overlay(flash_color,0.38)
 
             pygame.display.flip()
             clock.tick(60)
-
     finally:
-        try:
-            glDeleteTextures([tex])
-        except Exception:
-            pass
+        try: glDeleteTextures([tex])
+        except Exception: pass
         pygame.quit()
 
 
