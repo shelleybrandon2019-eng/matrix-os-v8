@@ -28,7 +28,17 @@ force_sync() {
   local remote_sha
   remote_sha="$(git rev-parse "origin/$BRANCH" 2>/dev/null || true)"
   [[ -n "$remote_sha" ]] || return 1
-  git checkout -B "$BRANCH" "origin/$BRANCH" || return 1
+
+  # Local tracked edits must never wedge the kiosk in an update/restart loop.
+  # Preserve them in a stash for recovery, but keep GitHub as the live source.
+  if ! git diff --quiet || ! git diff --cached --quiet; then
+    local stamp
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    echo "[Matrix OS] local tracked edits found; stashing as matrix-autoupdate-$stamp"
+    git stash push -m "matrix-autoupdate-$stamp" -- . || return 1
+  fi
+
+  git checkout -f -B "$BRANCH" "origin/$BRANCH" || return 1
   git reset --hard "origin/$BRANCH" || return 1
 }
 
@@ -68,7 +78,9 @@ start_bridge_if_present() {
   fi
 }
 
-force_sync || true
+if ! force_sync; then
+  echo "[Matrix OS] initial GitHub sync failed; starting installed version"
+fi
 kill_old_displays
 
 while true; do
@@ -94,12 +106,18 @@ while true; do
 
     if [[ -n "$REMOTE_SHA" && "$LOCAL_SHA" != "$REMOTE_SHA" ]]; then
       echo "[Matrix OS] update detected: ${LOCAL_SHA:0:7} -> ${REMOTE_SHA:0:7}"
-      UPDATED=1
-      stop_children
-      force_sync || true
-      kill_old_displays
-      sleep 1
-      break
+
+      # Sync first while the current dashboard remains visible. Only restart the
+      # display after a successful sync, so a Git problem cannot cause blackouts.
+      if force_sync; then
+        UPDATED=1
+        stop_children
+        kill_old_displays
+        sleep 1
+        break
+      else
+        echo "[Matrix OS] update sync failed; keeping current dashboard running"
+      fi
     fi
   done
 
