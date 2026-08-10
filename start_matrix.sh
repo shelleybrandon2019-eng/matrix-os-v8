@@ -48,6 +48,7 @@ kill_old_displays() {
   pkill -KILL -f '/home/b/matrix_time_glitch.py' 2>/dev/null || true
   pkill -KILL -f 'cinematic_director.py' 2>/dev/null || true
   pkill -KILL -f 'temp_scene_director.py' 2>/dev/null || true
+  pkill -KILL -f 'tunnel_scene_director.py' 2>/dev/null || true
   pkill -KILL -f 'esp32_clock_bridge.py' 2>/dev/null || true
   pkill -KILL -f '/home/b/matrix-os-v8/main.py' 2>/dev/null || true
 }
@@ -84,9 +85,9 @@ fi
 kill_old_displays
 
 while true; do
-  echo "[Matrix OS] dashboard, commit $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  echo "[Matrix OS] tunnel dashboard, commit $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
   start_bridge_if_present
-  /usr/bin/python3 temp_scene_director.py &
+  /usr/bin/python3 tunnel_scene_director.py &
   APP_PID=$!
   UPDATED=0
 
@@ -126,6 +127,6 @@ while true; do
   fi
 
   stop_children
-  echo "[Matrix OS] dashboard stopped; restarting in 2 seconds"
+  echo "[Matrix OS] tunnel dashboard stopped; restarting in 2 seconds"
   sleep 2
 done
