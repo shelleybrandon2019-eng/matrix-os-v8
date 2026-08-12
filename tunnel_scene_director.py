@@ -1,29 +1,131 @@
 #!/usr/bin/env python3
-"""Matrix OS tunnel reveal: continuous rain, arched tunnel, 24-hour clock, Neo temp melt."""
+"""Matrix OS tunnel reveal: continuous rain, arched tunnel, four live temps, 24-hour clock."""
 from __future__ import annotations
 
+import random
 import sys
+from typing import Dict, List, Optional, Tuple
 
 import pygame
 
 from temp_scene_director import (
     FORM_SECONDS,
+    GREEN,
     HEIGHT,
+    MATRIX_CHARS,
     MELT_SECONDS,
+    SHADOW,
     WIDTH,
+    DualNeoReveal,
     MatrixDashboard as BaseMatrixDashboard,
+    RevealGlyph,
+    choose_cyber_font,
     clamp,
+    format_temp,
     smoothstep,
+    temp_color,
 )
 
 
+class FourTempReveal(DualNeoReveal):
+    """Four sensor readings collect from code, hold cleanly, then melt into rain."""
+
+    def __init__(
+        self,
+        outside: Optional[float],
+        inside: Optional[float],
+        front_room: Optional[float],
+        bedroom: Optional[float],
+        label_font: pygame.font.Font,
+        value_font: pygame.font.Font,
+        glyph_font: pygame.font.Font,
+    ) -> None:
+        self.label_font = label_font
+        self.value_font = value_font
+        self.glyph_font = glyph_font
+        self.phase = "form"
+        self.elapsed = 0.0
+        self.finished = False
+        self.cache: Dict[Tuple[str, Tuple[int, int, int]], pygame.Surface] = {}
+        self.particles: List[RevealGlyph] = []
+
+        left_x = 126
+        right_x = 354
+        self.layout = [
+            ("OUTSIDE", label_font, GREEN, left_x, 145),
+            (format_temp(outside), value_font, temp_color(outside), left_x, 178),
+            ("INSIDE", label_font, GREEN, right_x, 145),
+            (format_temp(inside), value_font, temp_color(inside), right_x, 178),
+            ("FRONT ROOM", label_font, GREEN, left_x, 224),
+            (format_temp(front_room), value_font, temp_color(front_room), left_x, 258),
+            ("BEDROOM", label_font, GREEN, right_x, 224),
+            (format_temp(bedroom), value_font, temp_color(bedroom), right_x, 258),
+        ]
+        self.build_particles()
+
+    def build_particles(self) -> None:
+        mask = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        for text, font, _color, x, y in self.layout:
+            image = font.render(text, True, (255, 255, 255))
+            mask.blit(image, image.get_rect(center=(x, y)))
+
+        targets: List[Tuple[int, int]] = []
+        for y in range(118, 298, 5):
+            for x in range(8, WIDTH - 8, 5):
+                if mask.get_at((x, y)).a > 35:
+                    targets.append((x, y))
+
+        if len(targets) > 600:
+            targets = random.sample(targets, 600)
+
+        for tx, ty in targets:
+            if random.random() < 0.90:
+                sx = tx + random.uniform(-26, 26)
+                sy = random.uniform(-100, 112)
+            elif random.random() < 0.5:
+                sx = random.uniform(-40, -5)
+                sy = random.uniform(105, HEIGHT)
+            else:
+                sx = random.uniform(WIDTH + 5, WIDTH + 40)
+                sy = random.uniform(105, HEIGHT)
+
+            self.particles.append(
+                RevealGlyph(
+                    sx=sx,
+                    sy=sy,
+                    tx=float(tx),
+                    ty=float(ty),
+                    glyph=random.choice(MATRIX_CHARS),
+                    delay=random.uniform(0.0, 0.26),
+                    fall=random.uniform(150, 285),
+                    wobble=random.uniform(-12, 12),
+                )
+            )
+
+    def draw_text(self, screen: pygame.Surface, alpha: int = 255) -> None:
+        for text, font, color, x, y in self.layout:
+            shadow = font.render(text, True, SHADOW)
+            image = font.render(text, True, color)
+
+            if alpha < 255:
+                shadow.set_alpha(alpha)
+                image.set_alpha(alpha)
+
+            rect = image.get_rect(center=(x, y))
+            screen.blit(shadow, rect.move(2, 2))
+            screen.blit(image, rect)
+
+
 class TunnelMatrixDashboard(BaseMatrixDashboard):
-    """Keep the Matrix rain alive while a dark arched tunnel frames the temp reveal."""
+    """Continuous lighter rain while an arched tunnel frames all four temperatures."""
 
     def __init__(self) -> None:
         super().__init__()
         self.tunnel_overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         self.reveal_rain_layer = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+
+        self.label_font = choose_cyber_font(17, bold=True)
+        self.value_font = choose_cyber_font(31, bold=True)
 
     @staticmethod
     def _paint_arch(
@@ -34,7 +136,6 @@ class TunnelMatrixDashboard(BaseMatrixDashboard):
         arch_height: int,
         color: tuple[int, int, int, int],
     ) -> None:
-        """Paint a wide movie-style arched opening: curved roof with straight sides."""
         rect = pygame.Rect(left, top, width, arch_height)
         pygame.draw.ellipse(surface, color, rect)
         shoulder_y = top + arch_height // 2
@@ -44,20 +145,30 @@ class TunnelMatrixDashboard(BaseMatrixDashboard):
             pygame.Rect(left, shoulder_y, width, HEIGHT - shoulder_y),
         )
 
+    def start_reveal(self) -> None:
+        self.data.refresh()
+        self.reveal = FourTempReveal(
+            self.data.outside_f,
+            self.data.inside_f,
+            self.data.front_room_f,
+            self.data.bedroom_f,
+            self.label_font,
+            self.value_font,
+            self.glyph_font,
+        )
+        self.elapsed = 0.0
+
     def _tunnel_strength(self) -> float:
         reveal = self.reveal
         if reveal is None:
             return 0.0
 
         if reveal.phase == "form":
-            # The walls fade in quickly while the temperature is assembling.
             return smoothstep(clamp(reveal.elapsed / (FORM_SECONDS * 0.72), 0.0, 1.0))
 
         if reveal.phase == "hold":
             return 1.0
 
-        # Keep the tunnel around the first part of the melt, then dissolve it
-        # back into full-screen rain as the falling temp glyphs become rain.
         t = clamp(reveal.elapsed / MELT_SECONDS, 0.0, 1.0)
         return 1.0 - smoothstep(clamp((t - 0.22) / 0.78, 0.0, 1.0))
 
@@ -66,16 +177,11 @@ class TunnelMatrixDashboard(BaseMatrixDashboard):
         if strength <= 0.001:
             return
 
-        # Inspired by the wide tunnel opening in the reference: a low, broad arch,
-        # dark ceiling/sides, and bright moving Matrix rain visible through the mouth.
-        # The outer rain is only DIMMED, never stopped.
-        base_alpha = int(178 * strength)
+        base_alpha = int(160 * strength)
         self.tunnel_overlay.fill((0, 5, 2, base_alpha))
 
-        # Three nested openings create a soft tunnel lip instead of a hard oval/box.
-        # The innermost opening is fully clear so the rain keeps falling behind temps.
-        outer_alpha = int(base_alpha * 0.58)
-        middle_alpha = int(base_alpha * 0.28)
+        outer_alpha = int(base_alpha * 0.54)
+        middle_alpha = int(base_alpha * 0.24)
 
         self._paint_arch(
             self.tunnel_overlay,
@@ -108,23 +214,17 @@ class TunnelMatrixDashboard(BaseMatrixDashboard):
         self.screen.fill((0, 0, 0))
 
         if self.reveal:
-            # Keep every rain stream moving, but make the rain behind the temp scene
-            # lighter/less busy so the forming temperature remains the focus.
             self.reveal_rain_layer.fill((0, 0, 0, 0))
-            self.rain.draw(self.reveal_rain_layer, 0.46)
-            self.reveal_rain_layer.set_alpha(165)
+            self.rain.draw(self.reveal_rain_layer, 0.40)
+            self.reveal_rain_layer.set_alpha(142)
             self.screen.blit(self.reveal_rain_layer, (0, 0))
             self.reveal_rain_layer.set_alpha(255)
 
-            # Dark tunnel walls frame the moving rain curtain. The tunnel design
-            # stays exactly the same; only the rain intensity is reduced here.
             self._draw_tunnel()
             self.reveal.draw(self.screen)
         else:
-            # Normal full-screen rain is unchanged.
-            self.rain.draw(self.screen, 0.58)
+            self.rain.draw(self.screen, 0.56)
 
-        # Keep the oversized 24-hour cyber clock above the scene at all times.
         self.clock.draw(self.screen)
         pygame.display.flip()
 
