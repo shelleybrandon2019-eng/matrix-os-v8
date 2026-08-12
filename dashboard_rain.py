@@ -60,7 +60,9 @@ class CodeColumn:
             if full_height
             else random.uniform(-HEIGHT * 0.58, -10)
         )
-        self.speed = random.uniform(50.0, 122.0)
+        # Movie-like cadence: slow background streams with much faster foreground
+        # heads. Layer multipliers below spread this across roughly 60-275 px/sec.
+        self.speed = random.uniform(105.0, 240.0)
         self.length = random.randint(50, 84)
         self.brightness = random.uniform(0.84, 1.15)
         self.mutation = random.uniform(0.95, 2.8)
@@ -106,9 +108,9 @@ class DashboardRain:
 
         # Substantially fewer streams, much bigger glyphs, more open space.
         layer_specs = (
-            (11, 18, 0.62, 0.74),
-            (14, 26, 0.78, 0.86),
-            (17, 36, 0.92, 0.98),
+            (11, 18, 0.58, 0.74),
+            (14, 26, 0.74, 0.86),
+            (17, 36, 0.90, 0.98),
             (20, 48, 1.00, 1.05),
         )
 
@@ -158,11 +160,12 @@ class DashboardRain:
 
     def update(self, dt: float, energy: float = 0.0) -> None:
         self.time += dt
-        boost = 1.02 + max(0.0, min(1.0, energy)) * 0.10
+        # Preserve the wide speed spread instead of making every stream race together.
+        boost = 1.08 + max(0.0, min(1.0, energy)) * 0.12
         multipliers = (
-            (0.62, 0.74),
-            (0.78, 0.86),
-            (0.92, 0.98),
+            (0.58, 0.74),
+            (0.74, 0.86),
+            (0.90, 0.98),
             (1.00, 1.05),
         )
 
