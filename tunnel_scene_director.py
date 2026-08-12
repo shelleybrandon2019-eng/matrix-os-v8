@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Matrix OS tunnel reveal: continuous rain, arched tunnel, four live temps, 24-hour clock."""
+"""Matrix OS tunnel reveal: continuous large rain and two-stage live temperature reveals."""
 from __future__ import annotations
 
 import random
@@ -8,12 +8,14 @@ from typing import Dict, List, Optional, Tuple
 
 import pygame
 
+from live_data import BEDROOM_MAC, FRONT_ROOM_MAC
 from temp_scene_director import (
     FORM_SECONDS,
     GREEN,
     HEIGHT,
     MATRIX_CHARS,
     MELT_SECONDS,
+    RAIN_SECONDS,
     SHADOW,
     WIDTH,
     DualNeoReveal,
@@ -27,15 +29,15 @@ from temp_scene_director import (
 )
 
 
-class FourTempReveal(DualNeoReveal):
-    """Four sensor readings collect from code, hold cleanly, then melt into rain."""
+class PairTempReveal(DualNeoReveal):
+    """Two large temperatures collect from code, hold cleanly, then melt into rain."""
 
     def __init__(
         self,
-        outside: Optional[float],
-        inside: Optional[float],
-        front_room: Optional[float],
-        bedroom: Optional[float],
+        left_label: str,
+        left_value: Optional[float],
+        right_label: str,
+        right_value: Optional[float],
         label_font: pygame.font.Font,
         value_font: pygame.font.Font,
         glyph_font: pygame.font.Font,
@@ -51,42 +53,42 @@ class FourTempReveal(DualNeoReveal):
 
         left_x = 126
         right_x = 354
+        label_y = 172
+        value_y = 220
+
         self.layout = [
-            ("OUTSIDE", label_font, GREEN, left_x, 145),
-            (format_temp(outside), value_font, temp_color(outside), left_x, 178),
-            ("INSIDE", label_font, GREEN, right_x, 145),
-            (format_temp(inside), value_font, temp_color(inside), right_x, 178),
-            ("FRONT ROOM", label_font, GREEN, left_x, 224),
-            (format_temp(front_room), value_font, temp_color(front_room), left_x, 258),
-            ("BEDROOM", label_font, GREEN, right_x, 224),
-            (format_temp(bedroom), value_font, temp_color(bedroom), right_x, 258),
+            (left_label, label_font, GREEN, left_x, label_y),
+            (format_temp(left_value), value_font, temp_color(left_value), left_x, value_y),
+            (right_label, label_font, GREEN, right_x, label_y),
+            (format_temp(right_value), value_font, temp_color(right_value), right_x, value_y),
         ]
         self.build_particles()
 
     def build_particles(self) -> None:
         mask = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+
         for text, font, _color, x, y in self.layout:
             image = font.render(text, True, (255, 255, 255))
             mask.blit(image, image.get_rect(center=(x, y)))
 
         targets: List[Tuple[int, int]] = []
-        for y in range(118, 298, 5):
+        for y in range(138, 272, 5):
             for x in range(8, WIDTH - 8, 5):
                 if mask.get_at((x, y)).a > 35:
                     targets.append((x, y))
 
-        if len(targets) > 600:
-            targets = random.sample(targets, 600)
+        if len(targets) > 430:
+            targets = random.sample(targets, 430)
 
         for tx, ty in targets:
             if random.random() < 0.90:
-                sx = tx + random.uniform(-26, 26)
-                sy = random.uniform(-100, 112)
+                sx = tx + random.uniform(-28, 28)
+                sy = random.uniform(-100, 118)
             elif random.random() < 0.5:
-                sx = random.uniform(-40, -5)
+                sx = random.uniform(-42, -5)
                 sy = random.uniform(105, HEIGHT)
             else:
-                sx = random.uniform(WIDTH + 5, WIDTH + 40)
+                sx = random.uniform(WIDTH + 5, WIDTH + 42)
                 sy = random.uniform(105, HEIGHT)
 
             self.particles.append(
@@ -97,7 +99,7 @@ class FourTempReveal(DualNeoReveal):
                     ty=float(ty),
                     glyph=random.choice(MATRIX_CHARS),
                     delay=random.uniform(0.0, 0.26),
-                    fall=random.uniform(150, 285),
+                    fall=random.uniform(155, 290),
                     wobble=random.uniform(-12, 12),
                 )
             )
@@ -117,15 +119,19 @@ class FourTempReveal(DualNeoReveal):
 
 
 class TunnelMatrixDashboard(BaseMatrixDashboard):
-    """Continuous lighter rain while an arched tunnel frames all four temperatures."""
+    """Dozer-style sparse rain with an arched tunnel and two separate temp scenes."""
 
     def __init__(self) -> None:
         super().__init__()
         self.tunnel_overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         self.reveal_rain_layer = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
 
-        self.label_font = choose_cyber_font(17, bold=True)
-        self.value_font = choose_cyber_font(31, bold=True)
+        self.label_font = choose_cyber_font(21, bold=True)
+        self.room_label_font = choose_cyber_font(18, bold=True)
+        self.value_font = choose_cyber_font(39, bold=True)
+
+        # 0 = normal rain, 1 = outside/inside, 2 = front room/bedroom.
+        self.reveal_stage = 0
 
     @staticmethod
     def _paint_arch(
@@ -145,18 +151,74 @@ class TunnelMatrixDashboard(BaseMatrixDashboard):
             pygame.Rect(left, shoulder_y, width, HEIGHT - shoulder_y),
         )
 
-    def start_reveal(self) -> None:
-        self.data.refresh()
-        self.reveal = FourTempReveal(
+    def _weather_reveal(self) -> PairTempReveal:
+        return PairTempReveal(
+            "OUTSIDE",
             self.data.outside_f,
+            "INSIDE",
             self.data.inside_f,
-            self.data.front_room_f,
-            self.data.bedroom_f,
             self.label_font,
             self.value_font,
             self.glyph_font,
         )
+
+    def _room_reveal(self) -> PairTempReveal:
+        # The BLE worker stores fresh readings immediately in _ble_values. Pull those
+        # cached values here so the second scene does not have to wait for the slower
+        # 30-second general refresh cycle.
+        try:
+            with self.data._ble_lock:
+                front = self.data._ble_values.get(FRONT_ROOM_MAC)
+                bedroom = self.data._ble_values.get(BEDROOM_MAC)
+
+            if front is not None:
+                self.data.front_room_f = front
+            if bedroom is not None:
+                self.data.bedroom_f = bedroom
+        except Exception:
+            pass
+
+        return PairTempReveal(
+            "FRONT ROOM",
+            self.data.front_room_f,
+            "BEDROOM",
+            self.data.bedroom_f,
+            self.room_label_font,
+            self.value_font,
+            self.glyph_font,
+        )
+
+    def start_reveal(self) -> None:
+        self.data.refresh()
+        self.reveal_stage = 1
+        self.reveal = self._weather_reveal()
         self.elapsed = 0.0
+
+    def update(self, dt: float) -> None:
+        self.data.refresh()
+
+        # Rain is always alive, including both temperature scenes.
+        energy = 0.48 if self.reveal else 0.54
+        self.rain.update(dt, energy)
+        self.elapsed += dt
+
+        if self.reveal:
+            self.reveal.update(dt)
+
+            if self.reveal.finished:
+                if self.reveal_stage == 1:
+                    # The second temperature screen is explicit and unavoidable:
+                    # FRONT ROOM + BEDROOM follows OUTSIDE + INSIDE every cycle.
+                    self.reveal_stage = 2
+                    self.reveal = self._room_reveal()
+                    self.elapsed = 0.0
+                else:
+                    self.reveal = None
+                    self.reveal_stage = 0
+                    self.elapsed = 0.0
+
+        elif self.elapsed >= RAIN_SECONDS:
+            self.start_reveal()
 
     def _tunnel_strength(self) -> float:
         reveal = self.reveal
@@ -164,7 +226,9 @@ class TunnelMatrixDashboard(BaseMatrixDashboard):
             return 0.0
 
         if reveal.phase == "form":
-            return smoothstep(clamp(reveal.elapsed / (FORM_SECONDS * 0.72), 0.0, 1.0))
+            return smoothstep(
+                clamp(reveal.elapsed / (FORM_SECONDS * 0.72), 0.0, 1.0)
+            )
 
         if reveal.phase == "hold":
             return 1.0
@@ -177,11 +241,11 @@ class TunnelMatrixDashboard(BaseMatrixDashboard):
         if strength <= 0.001:
             return
 
-        base_alpha = int(160 * strength)
+        base_alpha = int(150 * strength)
         self.tunnel_overlay.fill((0, 5, 2, base_alpha))
 
-        outer_alpha = int(base_alpha * 0.54)
-        middle_alpha = int(base_alpha * 0.24)
+        outer_alpha = int(base_alpha * 0.52)
+        middle_alpha = int(base_alpha * 0.22)
 
         self._paint_arch(
             self.tunnel_overlay,
@@ -214,16 +278,17 @@ class TunnelMatrixDashboard(BaseMatrixDashboard):
         self.screen.fill((0, 0, 0))
 
         if self.reveal:
+            # Same moving rain, only lighter while the temp text forms.
             self.reveal_rain_layer.fill((0, 0, 0, 0))
-            self.rain.draw(self.reveal_rain_layer, 0.40)
-            self.reveal_rain_layer.set_alpha(142)
+            self.rain.draw(self.reveal_rain_layer, 0.34)
+            self.reveal_rain_layer.set_alpha(132)
             self.screen.blit(self.reveal_rain_layer, (0, 0))
             self.reveal_rain_layer.set_alpha(255)
 
             self._draw_tunnel()
             self.reveal.draw(self.screen)
         else:
-            self.rain.draw(self.screen, 0.56)
+            self.rain.draw(self.screen, 0.50)
 
         self.clock.draw(self.screen)
         pygame.display.flip()
