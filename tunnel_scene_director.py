@@ -23,6 +23,7 @@ class TunnelMatrixDashboard(BaseMatrixDashboard):
     def __init__(self) -> None:
         super().__init__()
         self.tunnel_overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        self.reveal_rain_layer = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
 
     @staticmethod
     def _paint_arch(
@@ -104,15 +105,24 @@ class TunnelMatrixDashboard(BaseMatrixDashboard):
         self.screen.blit(self.tunnel_overlay, (0, 0))
 
     def draw(self) -> None:
-        # Full rain is always rendered first and always keeps moving.
         self.screen.fill((0, 0, 0))
-        self.rain.draw(self.screen, 0.64 if self.reveal else 0.58)
 
         if self.reveal:
-            # Dark tunnel walls frame a bright rain curtain. No flat panel and no
-            # permanent background geometry when the temperatures are gone.
+            # Keep every rain stream moving, but make the rain behind the temp scene
+            # lighter/less busy so the forming temperature remains the focus.
+            self.reveal_rain_layer.fill((0, 0, 0, 0))
+            self.rain.draw(self.reveal_rain_layer, 0.46)
+            self.reveal_rain_layer.set_alpha(165)
+            self.screen.blit(self.reveal_rain_layer, (0, 0))
+            self.reveal_rain_layer.set_alpha(255)
+
+            # Dark tunnel walls frame the moving rain curtain. The tunnel design
+            # stays exactly the same; only the rain intensity is reduced here.
             self._draw_tunnel()
             self.reveal.draw(self.screen)
+        else:
+            # Normal full-screen rain is unchanged.
+            self.rain.draw(self.screen, 0.58)
 
         # Keep the oversized 24-hour cyber clock above the scene at all times.
         self.clock.draw(self.screen)
