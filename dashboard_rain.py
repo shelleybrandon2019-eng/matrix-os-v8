@@ -4,6 +4,9 @@
 Pure vertical code rain only. Very few streams, oversized Matrix glyphs, and long
 white-to-green tails make the display read like the operator screens instead of a
 wall of tiny text. Rain glyphs are Matrix characters only: no numeric digits.
+
+Motion follows the classic Matrix-rain cadence: each stream advances about
+0.4-1.75 character rows per frame at 60 FPS, scaled to its actual glyph spacing.
 """
 from __future__ import annotations
 
@@ -60,12 +63,17 @@ class CodeColumn:
             if full_height
             else random.uniform(-HEIGHT * 0.58, -10)
         )
-        # Movie-like cadence: slow background streams with much faster foreground
-        # heads. Layer multipliers below spread this across roughly 60-275 px/sec.
-        self.speed = random.uniform(105.0, 240.0)
+
+        # Match the cadence of the reference Matrix implementation:
+        # drops += random.uniform(0.8, 3.5) * 0.5 each 60 Hz frame.
+        # Converting character rows/frame to pixels/second gives:
+        # row_speed * 0.5 * 60 * actual glyph spacing.
+        row_speed = random.uniform(0.8, 3.5)
+        self.speed = row_speed * 30.0 * self.spacing
+
         self.length = random.randint(50, 84)
         self.brightness = random.uniform(0.84, 1.15)
-        self.mutation = random.uniform(0.95, 2.8)
+        self.mutation = random.uniform(2.4, 3.4)
         self.hot = random.random() < 0.84
         self.glyphs = [random.choice(MATRIX_CHARS) for _ in range(self.length)]
 
@@ -106,15 +114,17 @@ class DashboardRain:
         self.surface = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         self.time = 0.0
 
-        # Substantially fewer streams, much bigger glyphs, more open space.
+        # Keep Brandon's sparse, oversized operator-screen look. Speed is no longer
+        # tied to these visual layers; every column independently gets the movie-like
+        # 0.8-3.5 row-speed range when it is recycled.
         layer_specs = (
-            (11, 18, 0.58, 0.74),
-            (14, 26, 0.74, 0.86),
-            (17, 36, 0.90, 0.98),
-            (20, 48, 1.00, 1.05),
+            (11, 18, 0.74),
+            (14, 26, 0.86),
+            (17, 36, 0.98),
+            (20, 48, 1.05),
         )
 
-        for layer, (font_size, x_spacing, speed_mul, bright_mul) in enumerate(layer_specs):
+        for layer, (font_size, x_spacing, bright_mul) in enumerate(layer_specs):
             font = self.fonts[font_size]
             y_spacing = max(font_size, font.get_linesize() - 2)
             offset = random.randint(0, x_spacing - 1)
@@ -129,12 +139,11 @@ class DashboardRain:
                     font_size=font_size,
                     glyphs=[],
                     brightness=1.0,
-                    mutation=1.8,
+                    mutation=3.0,
                     hot=False,
                     layer=layer,
                 )
                 col.recycle(full_height=True)
-                col.speed *= speed_mul
                 col.brightness *= bright_mul
                 self.columns.append(col)
 
@@ -160,27 +169,21 @@ class DashboardRain:
 
     def update(self, dt: float, energy: float = 0.0) -> None:
         self.time += dt
-        # Preserve the wide speed spread instead of making every stream race together.
-        boost = 1.08 + max(0.0, min(1.0, energy)) * 0.12
-        multipliers = (
-            (0.58, 0.74),
-            (0.74, 0.86),
-            (0.90, 0.98),
-            (1.00, 1.05),
-        )
 
+        # Keep speed constant through normal rain and temperature reveals. The
+        # reference Matrix effect gets its life from independent column speeds,
+        # not from globally speeding up/slowing down the whole screen.
         for col in self.columns:
-            col.y += col.speed * boost * dt
+            col.y += col.speed * dt
 
+            # The reference changes a glyph with ~5% probability each 60 Hz frame,
+            # roughly three mutations per second per stream.
             if col.glyphs and random.random() < dt * col.mutation:
-                changes = 2 if random.random() < 0.12 else 1
-                for _ in range(changes):
-                    col.glyphs[random.randrange(len(col.glyphs))] = random.choice(MATRIX_CHARS)
+                col.glyphs[random.randrange(len(col.glyphs))] = random.choice(MATRIX_CHARS)
 
             if col.y - col.length * col.spacing > HEIGHT + col.spacing:
                 col.recycle()
-                speed_mul, bright_mul = multipliers[col.layer]
-                col.speed *= speed_mul
+                bright_mul = (0.74, 0.86, 0.98, 1.05)[col.layer]
                 col.brightness *= bright_mul
 
     def draw(self, destination: pygame.Surface, energy: float = 0.0) -> None:
