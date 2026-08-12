@@ -5,8 +5,8 @@ Pure vertical code rain only. Very few streams, oversized Matrix glyphs, and lon
 white-to-green tails make the display read like the operator screens instead of a
 wall of tiny text. Rain glyphs are Matrix characters only: no numeric digits.
 
-Motion follows the classic Matrix-rain cadence: each stream advances about
-0.4-1.75 character rows per frame at 60 FPS, scaled to its actual glyph spacing.
+Motion is deliberately slower than the literal reference-script cadence because
+our glyphs are much larger. Each stream keeps an independent, smooth fall speed.
 """
 from __future__ import annotations
 
@@ -64,16 +64,15 @@ class CodeColumn:
             else random.uniform(-HEIGHT * 0.58, -10)
         )
 
-        # Match the cadence of the reference Matrix implementation:
-        # drops += random.uniform(0.8, 3.5) * 0.5 each 60 Hz frame.
-        # Converting character rows/frame to pixels/second gives:
-        # row_speed * 0.5 * 60 * actual glyph spacing.
-        row_speed = random.uniform(0.8, 3.5)
-        self.speed = row_speed * 30.0 * self.spacing
+        # Slower cinematic cadence for the oversized dashboard glyphs.
+        # Roughly 0.20-0.70 character rows per 60 Hz frame, with every stream
+        # still getting its own speed so the rain never looks mechanically synced.
+        row_speed = random.uniform(0.20, 0.70)
+        self.speed = row_speed * 60.0 * self.spacing
 
         self.length = random.randint(50, 84)
         self.brightness = random.uniform(0.84, 1.15)
-        self.mutation = random.uniform(2.4, 3.4)
+        self.mutation = random.uniform(1.5, 2.4)
         self.hot = random.random() < 0.84
         self.glyphs = [random.choice(MATRIX_CHARS) for _ in range(self.length)]
 
@@ -114,9 +113,7 @@ class DashboardRain:
         self.surface = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         self.time = 0.0
 
-        # Keep Brandon's sparse, oversized operator-screen look. Speed is no longer
-        # tied to these visual layers; every column independently gets the movie-like
-        # 0.8-3.5 row-speed range when it is recycled.
+        # Sparse, oversized operator-screen look.
         layer_specs = (
             (11, 18, 0.74),
             (14, 26, 0.86),
@@ -139,7 +136,7 @@ class DashboardRain:
                     font_size=font_size,
                     glyphs=[],
                     brightness=1.0,
-                    mutation=3.0,
+                    mutation=2.0,
                     hot=False,
                     layer=layer,
                 )
@@ -170,14 +167,10 @@ class DashboardRain:
     def update(self, dt: float, energy: float = 0.0) -> None:
         self.time += dt
 
-        # Keep speed constant through normal rain and temperature reveals. The
-        # reference Matrix effect gets its life from independent column speeds,
-        # not from globally speeding up/slowing down the whole screen.
+        # Speed stays constant through normal rain and temperature reveals.
         for col in self.columns:
             col.y += col.speed * dt
 
-            # The reference changes a glyph with ~5% probability each 60 Hz frame,
-            # roughly three mutations per second per stream.
             if col.glyphs and random.random() < dt * col.mutation:
                 col.glyphs[random.randrange(len(col.glyphs))] = random.choice(MATRIX_CHARS)
 
