@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Large sparse Dozer-style Matrix rain for the 480x320 dashboard.
 
-Pure vertical code rain only. Fewer streams, larger glyphs, and long white-to-green
-tails make the display read like the Matrix operator screens instead of a wall of
-small text.
+Pure vertical code rain only. Very few streams, oversized Matrix glyphs, and long
+white-to-green tails make the display read like the operator screens instead of a
+wall of tiny text. Rain glyphs are Matrix characters only: no numeric digits.
 """
 from __future__ import annotations
 
@@ -16,10 +16,10 @@ import pygame
 WIDTH = 480
 HEIGHT = 320
 
+# Matrix-style kana only. No Arabic digits or ASCII punctuation in the rain.
 MATRIX_CHARS = (
-    "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ"
-    "ｦｧｨｩｪｫｬｭｮｯｰﾞﾟ"
-    "0123456789@#$%&*+=<>?/\\|:;.-_"
+    "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎ"
+    "ﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝｦｧｨｩｪｫｬｭｮｯｰﾞﾟ"
 )
 
 
@@ -56,44 +56,43 @@ class CodeColumn:
 
     def recycle(self, *, full_height: bool = False) -> None:
         self.y = (
-            random.uniform(-HEIGHT * 0.10, HEIGHT * 1.10)
+            random.uniform(-HEIGHT * 0.12, HEIGHT * 1.08)
             if full_height
-            else random.uniform(-HEIGHT * 0.50, -8)
+            else random.uniform(-HEIGHT * 0.58, -10)
         )
-        self.speed = random.uniform(56.0, 142.0)
-        self.length = random.randint(52, 86)
+        self.speed = random.uniform(50.0, 122.0)
+        self.length = random.randint(50, 84)
         self.brightness = random.uniform(0.84, 1.15)
-        self.mutation = random.uniform(1.15, 3.2)
-        self.hot = random.random() < 0.82
+        self.mutation = random.uniform(0.95, 2.8)
+        self.hot = random.random() < 0.84
         self.glyphs = [random.choice(MATRIX_CHARS) for _ in range(self.length)]
 
 
 class DashboardRain:
-    """Sparse, oversized Matrix streams with long luminous tracking tails."""
+    """Sparse oversized Matrix streams with long luminous tracking tails."""
 
-    FONT_SIZES = (9, 11, 13, 15)
-
+    FONT_SIZES = (11, 14, 17, 20)
     PALETTE = (
-        (0, 16, 5),
-        (0, 26, 7),
-        (0, 40, 10),
-        (0, 58, 14),
-        (0, 82, 19),
-        (0, 112, 25),
-        (0, 152, 34),
-        (0, 205, 50),
+        (0, 14, 4),
+        (0, 22, 6),
+        (0, 34, 9),
+        (0, 48, 12),
+        (0, 68, 17),
+        (0, 96, 23),
+        (0, 136, 31),
+        (0, 192, 47),
     )
 
     LEAD_COLORS = (
-        (232, 255, 236),
-        (214, 255, 224),
-        (192, 255, 207),
-        (164, 255, 187),
-        (132, 255, 164),
-        (98, 252, 141),
-        (66, 246, 116),
-        (34, 237, 91),
-        (8, 224, 70),
+        (234, 255, 238),
+        (220, 255, 228),
+        (204, 255, 216),
+        (182, 255, 201),
+        (154, 255, 181),
+        (120, 252, 156),
+        (84, 246, 128),
+        (46, 235, 98),
+        (12, 220, 72),
     )
 
     def __init__(self) -> None:
@@ -105,18 +104,17 @@ class DashboardRain:
         self.surface = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         self.time = 0.0
 
-        # Roughly half the old stream count, but each stream is much larger and longer.
-        # This is closer to the chunky operator-screen code look.
+        # Substantially fewer streams, much bigger glyphs, more open space.
         layer_specs = (
-            (9, 11, 0.60, 0.72),
-            (11, 16, 0.76, 0.84),
-            (13, 23, 0.90, 0.96),
-            (15, 32, 1.00, 1.04),
+            (11, 18, 0.62, 0.74),
+            (14, 26, 0.78, 0.86),
+            (17, 36, 0.92, 0.98),
+            (20, 48, 1.00, 1.05),
         )
 
         for layer, (font_size, x_spacing, speed_mul, bright_mul) in enumerate(layer_specs):
             font = self.fonts[font_size]
-            y_spacing = max(font_size, font.get_linesize() - 3)
+            y_spacing = max(font_size, font.get_linesize() - 2)
             offset = random.randint(0, x_spacing - 1)
 
             for x in range(-x_spacing + offset, WIDTH + x_spacing, x_spacing):
@@ -124,12 +122,12 @@ class DashboardRain:
                     x=x,
                     y=0.0,
                     speed=100.0,
-                    length=64,
+                    length=62,
                     spacing=y_spacing,
                     font_size=font_size,
                     glyphs=[],
                     brightness=1.0,
-                    mutation=2.0,
+                    mutation=1.8,
                     hot=False,
                     layer=layer,
                 )
@@ -160,19 +158,19 @@ class DashboardRain:
 
     def update(self, dt: float, energy: float = 0.0) -> None:
         self.time += dt
-        boost = 1.04 + max(0.0, min(1.0, energy)) * 0.12
+        boost = 1.02 + max(0.0, min(1.0, energy)) * 0.10
         multipliers = (
-            (0.60, 0.72),
-            (0.76, 0.84),
-            (0.90, 0.96),
-            (1.00, 1.04),
+            (0.62, 0.74),
+            (0.78, 0.86),
+            (0.92, 0.98),
+            (1.00, 1.05),
         )
 
         for col in self.columns:
             col.y += col.speed * boost * dt
 
             if col.glyphs and random.random() < dt * col.mutation:
-                changes = 2 if random.random() < 0.16 else 1
+                changes = 2 if random.random() < 0.12 else 1
                 for _ in range(changes):
                     col.glyphs[random.randrange(len(col.glyphs))] = random.choice(MATRIX_CHARS)
 
@@ -184,7 +182,7 @@ class DashboardRain:
 
     def draw(self, destination: pygame.Surface, energy: float = 0.0) -> None:
         self.surface.fill((0, 0, 0, 0))
-        energy_gain = 1.0 + max(0.0, min(1.0, energy)) * 0.08
+        energy_gain = 1.0 + max(0.0, min(1.0, energy)) * 0.07
 
         for col in self.columns:
             for index, glyph in enumerate(col.glyphs):
@@ -194,10 +192,10 @@ class DashboardRain:
 
                 position = index / max(1, col.length - 1)
 
-                # Long smooth tails: the visible streak hangs behind the bright leader.
-                trail = max(0.055, (1.0 - position) ** 0.56)
+                # Long hanging tails behind a bright head.
+                trail = max(0.045, (1.0 - position) ** 0.52)
                 value = trail * col.brightness * energy_gain
-                level = max(0, min(7, int(value * 7.3)))
+                level = max(0, min(7, int(value * 7.2)))
 
                 lead_index = (
                     index
