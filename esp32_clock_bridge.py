@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
-"""Matrix OS V10 Hub Cut: keep the ESP32 clock synchronized over USB serial.
+"""Keep the ESP32 clock synchronized to the exact same local clock as the Pi UI.
 
 Uses only the Python standard library so the Pi does not need pyserial.
-The clock feed is explicitly pinned to America/New_York so the ESP32 always
-matches Columbus local time and daylight-saving changes automatically.
+The Matrix dashboard itself uses datetime.now(); this bridge deliberately does the
+same thing so there is no second timezone/DST conversion that can make the ESP32
+one hour different from the main display.
 
 Protocol sent to the ESP32:
-    TIME|HH|MM|SS|AM|YYYY-MM-DD
-Optional event state file payload:
-    {"mode":"clock_event","event":"MELT","event_id":123}
+    TIME|HH|MM|SS||YYYY-MM-DD
+
+HH is 24-hour local Pi time. The empty field after seconds intentionally clears
+AM/PM on the ESP32 display.
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import select
@@ -21,29 +24,16 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 PORT = os.getenv("MATRIX_ESP32_PORT", "/dev/ttyACM0")
 BAUD = termios.B115200
 STATE_FILE = Path(
     os.getenv("MATRIX_SIDECAR_STATE_FILE", "/tmp/matrix_sidecar_state.json")
 )
+LOCK_FILE = os.getenv("MATRIX_ESP32_LOCK", "/tmp/matrix-esp32-clock.lock")
 RECONNECT_SECONDS = 2.0
 SYNC_INTERVAL = 0.20
-VALID_EVENTS = {"MELT", "BULLET", "AGENT", "SCAN", "GLITCH", "BREACH"}
-TIMEZONE_NAME = os.getenv("MATRIX_TIMEZONE", "America/New_York")
-
-try:
-    LOCAL_TZ = ZoneInfo(TIMEZONE_NAME)
-except ZoneInfoNotFoundError:
-    # Raspberry Pi OS normally ships tzdata. If it is ever missing, fall back to
-    # the host timezone rather than killing the bridge entirely.
-    LOCAL_TZ = datetime.now().astimezone().tzinfo
-    print(
-        f"[ESP32 clock] timezone {TIMEZONE_NAME!r} unavailable; using host timezone",
-        file=sys.stderr,
-        flush=True,
-    )
+VALID_EVENTS = {"MELT", "BULLET", "AGENT", "SCAN", "GLITCH", "BREACH", "PHONE"}
 
 
 class RawSerial:
@@ -122,16 +112,15 @@ class RawSerial:
 
 
 def local_now() -> datetime:
-    """Return the canonical Matrix clock time for Columbus / Eastern Time."""
-    return datetime.now(LOCAL_TZ)
+    """Use the exact same host-local wall clock as the Matrix dashboard."""
+    return datetime.now()
 
 
 def clock_line(now: datetime) -> str:
-    hour = now.hour % 12 or 12
-    ampm = "AM" if now.hour < 12 else "PM"
+    """Send 24-hour Pi-local time; blank AM/PM keeps ESP display clean."""
     return (
-        f"TIME|{hour:02d}|{now.minute:02d}|{now.second:02d}|"
-        f"{ampm}|{now:%Y-%m-%d}"
+        f"TIME|{now.hour:02d}|{now.minute:02d}|{now.second:02d}||"
+        f"{now:%Y-%m-%d}"
     )
 
 
@@ -152,7 +141,21 @@ def read_event(last_event_id: object) -> tuple[object, Optional[str]]:
     return event_id, event
 
 
+def acquire_single_writer() -> object:
+    """Guarantee only one process can write clock data to the ESP32."""
+    lock = open(LOCK_FILE, "w", encoding="utf-8")
+    try:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print("[ESP32 clock] another clock bridge already owns the serial writer", flush=True)
+        raise SystemExit(0)
+    lock.write(str(os.getpid()))
+    lock.flush()
+    return lock
+
+
 def main() -> int:
+    _writer_lock = acquire_single_writer()
     serial = RawSerial(PORT)
     last_connect_attempt = -999.0
     last_sync = -999.0
@@ -161,7 +164,7 @@ def main() -> int:
     hello_sent = False
 
     print(
-        f"[ESP32 clock] timezone={TIMEZONE_NAME} current={local_now():%Y-%m-%d %I:%M:%S %p %Z}",
+        f"[ESP32 clock] Pi-local 24h current={local_now():%Y-%m-%d %H:%M:%S}",
         flush=True,
     )
 
@@ -179,10 +182,17 @@ def main() -> int:
             # ESP32-S3 USB CDC may reboot when the port opens. Give it a moment.
             if not hello_sent and now_mono - serial.opened_at >= 1.20:
                 hello_sent = serial.write_line("HELLO|MATRIX_OS_V10_HUB_CUT")
+                if hello_sent:
+                    # Send a fresh timestamp immediately after reconnect instead of
+                    # letting the screen hold an old minute until the normal loop.
+                    now = local_now()
+                    serial.write_line(clock_line(now))
+                    last_second = now.second
+                    last_sync = now_mono
 
             now = local_now()
             if hello_sent and (
-                now.second != last_second or now_mono - last_sync >= SYNC_INTERVAL * 6
+                now.second != last_second or now_mono - last_sync >= 1.0
             ):
                 if serial.write_line(clock_line(now)):
                     last_second = now.second
@@ -200,6 +210,8 @@ def main() -> int:
         return 0
     finally:
         serial.close()
+        # Keep a reference alive until shutdown so flock remains held.
+        _ = _writer_lock
 
 
 if __name__ == "__main__":
