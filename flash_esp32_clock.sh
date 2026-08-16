@@ -6,8 +6,10 @@ PORT="${MATRIX_ESP32_PORT:-/dev/ttyACM0}"
 TOOLS_DIR="${MATRIX_TOOLS_DIR:-$HOME/.local/share/matrix-os-v10}"
 PIO_VENV="$TOOLS_DIR/platformio"
 
-pkill -f 'esp32_clock_bridge.py' 2>/dev/null || true
-sleep 1
+if [[ "${MATRIX_SKIP_BRIDGE_KILL:-0}" != "1" ]]; then
+  pkill -f 'esp32_clock_bridge.py' 2>/dev/null || true
+  sleep 1
+fi
 
 if command -v pio >/dev/null 2>&1; then
   PIO=pio
