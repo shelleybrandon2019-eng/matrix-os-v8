@@ -6,6 +6,10 @@ The Matrix dashboard itself uses datetime.now(); this bridge deliberately does t
 same thing so there is no second timezone/DST conversion that can make the ESP32
 one hour different from the main display.
 
+On startup the bridge also verifies the ESP32 clock firmware source hash. If the
+Pi has a newer clock firmware than the board, it flashes that firmware once and
+then resumes the serial clock feed automatically.
+
 Protocol sent to the ESP32:
     TIME|HH|MM|SS||YYYY-MM-DD
 
@@ -15,9 +19,11 @@ AM/PM on the ESP32 display.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import select
+import subprocess
 import sys
 import termios
 import time
@@ -25,15 +31,94 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+ROOT = Path(__file__).resolve().parent
 PORT = os.getenv("MATRIX_ESP32_PORT", "/dev/ttyACM0")
 BAUD = termios.B115200
 STATE_FILE = Path(
     os.getenv("MATRIX_SIDECAR_STATE_FILE", "/tmp/matrix_sidecar_state.json")
 )
 LOCK_FILE = os.getenv("MATRIX_ESP32_LOCK", "/tmp/matrix-esp32-clock.lock")
+FW_MARKER = Path.home() / ".cache" / "matrix-os-v8" / "esp32-clock-fw.sha256"
+FW_FILES = (
+    ROOT / "esp32_clock" / "src" / "main.cpp",
+    ROOT / "esp32_clock" / "platformio.ini",
+)
 RECONNECT_SECONDS = 2.0
 SYNC_INTERVAL = 0.20
 VALID_EVENTS = {"MELT", "BULLET", "AGENT", "SCAN", "GLITCH", "BREACH", "PHONE"}
+
+
+def firmware_hash() -> Optional[str]:
+    digest = hashlib.sha256()
+    try:
+        for path in FW_FILES:
+            digest.update(path.name.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(path.read_bytes())
+            digest.update(b"\0")
+    except OSError as exc:
+        print(f"[ESP32 clock] cannot hash firmware: {exc}", file=sys.stderr, flush=True)
+        return None
+    return digest.hexdigest()
+
+
+def ensure_current_firmware() -> None:
+    """Flash the repo's ESP32 clock firmware once whenever its source changes."""
+    if not Path(PORT).exists():
+        return
+
+    wanted = firmware_hash()
+    if not wanted:
+        return
+
+    try:
+        installed = FW_MARKER.read_text(encoding="utf-8").strip()
+    except OSError:
+        installed = ""
+
+    if installed == wanted:
+        return
+
+    print("[ESP32 clock] firmware update needed; flashing current clock firmware", flush=True)
+    env = os.environ.copy()
+    env["MATRIX_ESP32_PORT"] = PORT
+    env["MATRIX_SKIP_BRIDGE_KILL"] = "1"
+
+    try:
+        result = subprocess.run(
+            ["/bin/bash", str(ROOT / "flash_esp32_clock.sh")],
+            cwd=str(ROOT),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=240,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"[ESP32 clock] automatic firmware flash failed: {exc}", file=sys.stderr, flush=True)
+        return
+
+    if result.stdout:
+        print(result.stdout.rstrip(), flush=True)
+
+    if result.returncode != 0:
+        print(
+            f"[ESP32 clock] firmware flash exited {result.returncode}; continuing with serial sync",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+
+    try:
+        FW_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        FW_MARKER.write_text(wanted + "\n", encoding="utf-8")
+    except OSError as exc:
+        print(f"[ESP32 clock] could not save firmware marker: {exc}", file=sys.stderr, flush=True)
+
+    # Give USB CDC time to disappear/re-enumerate after the upload reset.
+    time.sleep(2.0)
+    print("[ESP32 clock] firmware flash complete; starting live Pi-time sync", flush=True)
 
 
 class RawSerial:
@@ -156,6 +241,11 @@ def acquire_single_writer() -> object:
 
 def main() -> int:
     _writer_lock = acquire_single_writer()
+
+    # This runs before opening the serial port, so PlatformIO can own the ESP32
+    # cleanly if the board is still running older clock firmware.
+    ensure_current_firmware()
+
     serial = RawSerial(PORT)
     last_connect_attempt = -999.0
     last_sync = -999.0
@@ -183,8 +273,8 @@ def main() -> int:
             if not hello_sent and now_mono - serial.opened_at >= 1.20:
                 hello_sent = serial.write_line("HELLO|MATRIX_OS_V10_HUB_CUT")
                 if hello_sent:
-                    # Send a fresh timestamp immediately after reconnect instead of
-                    # letting the screen hold an old minute until the normal loop.
+                    # Force the real Pi time onto the screen immediately after every
+                    # reconnect instead of allowing any stale clock value to remain.
                     now = local_now()
                     serial.write_line(clock_line(now))
                     last_second = now.second
