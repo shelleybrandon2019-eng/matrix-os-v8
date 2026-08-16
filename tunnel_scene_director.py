@@ -126,9 +126,9 @@ class TunnelMatrixDashboard(BaseMatrixDashboard):
         self.tunnel_overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         self.reveal_rain_layer = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
 
-        self.label_font = choose_cyber_font(21, bold=True)
-        self.room_label_font = choose_cyber_font(18, bold=True)
-        self.value_font = choose_cyber_font(39, bold=True)
+        self.label_font = choose_cyber_font(25, bold=True)
+        self.room_label_font = choose_cyber_font(22, bold=True)
+        self.value_font = choose_cyber_font(48, bold=True)
 
         # 0 = normal rain, 1 = outside/inside, 2 = front room/bedroom.
         self.reveal_stage = 0
