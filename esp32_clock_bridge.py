@@ -2,6 +2,9 @@
 """Matrix OS V10 Hub Cut: keep the ESP32 clock synchronized over USB serial.
 
 Uses only the Python standard library so the Pi does not need pyserial.
+The clock feed is explicitly pinned to America/New_York so the ESP32 always
+matches Columbus local time and daylight-saving changes automatically.
+
 Protocol sent to the ESP32:
     TIME|HH|MM|SS|AM|YYYY-MM-DD
 Optional event state file payload:
@@ -18,6 +21,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 PORT = os.getenv("MATRIX_ESP32_PORT", "/dev/ttyACM0")
 BAUD = termios.B115200
@@ -27,6 +31,19 @@ STATE_FILE = Path(
 RECONNECT_SECONDS = 2.0
 SYNC_INTERVAL = 0.20
 VALID_EVENTS = {"MELT", "BULLET", "AGENT", "SCAN", "GLITCH", "BREACH"}
+TIMEZONE_NAME = os.getenv("MATRIX_TIMEZONE", "America/New_York")
+
+try:
+    LOCAL_TZ = ZoneInfo(TIMEZONE_NAME)
+except ZoneInfoNotFoundError:
+    # Raspberry Pi OS normally ships tzdata. If it is ever missing, fall back to
+    # the host timezone rather than killing the bridge entirely.
+    LOCAL_TZ = datetime.now().astimezone().tzinfo
+    print(
+        f"[ESP32 clock] timezone {TIMEZONE_NAME!r} unavailable; using host timezone",
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 class RawSerial:
@@ -104,6 +121,11 @@ class RawSerial:
         return lines
 
 
+def local_now() -> datetime:
+    """Return the canonical Matrix clock time for Columbus / Eastern Time."""
+    return datetime.now(LOCAL_TZ)
+
+
 def clock_line(now: datetime) -> str:
     hour = now.hour % 12 or 12
     ampm = "AM" if now.hour < 12 else "PM"
@@ -138,6 +160,11 @@ def main() -> int:
     last_event_id: object = None
     hello_sent = False
 
+    print(
+        f"[ESP32 clock] timezone={TIMEZONE_NAME} current={local_now():%Y-%m-%d %I:%M:%S %p %Z}",
+        flush=True,
+    )
+
     try:
         while True:
             now_mono = time.monotonic()
@@ -153,7 +180,7 @@ def main() -> int:
             if not hello_sent and now_mono - serial.opened_at >= 1.20:
                 hello_sent = serial.write_line("HELLO|MATRIX_OS_V10_HUB_CUT")
 
-            now = datetime.now().astimezone()
+            now = local_now()
             if hello_sent and (
                 now.second != last_second or now_mono - last_sync >= SYNC_INTERVAL * 6
             ):
