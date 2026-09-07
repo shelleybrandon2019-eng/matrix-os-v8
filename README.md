@@ -87,3 +87,10 @@ Add the Ecowitt application key, API key, and device MAC. Govee sensors are read
 ## Version history
 
 Previous builds remain available through archive branches. The `main` branch is now the **Matrix OS V10 Hub Cut** direction.
+
+## Optional Tapo camera panel
+
+Set `TAPO_CAMERA_ENABLED=1` and the `TAPO_CAMERA_*` values in the local,
+git-ignored `config.env`. The display then uses 75% of its width for Matrix
+OS and 25% for the low-bandwidth camera stream. Run `./install.sh` once to
+install the camera decoder.
