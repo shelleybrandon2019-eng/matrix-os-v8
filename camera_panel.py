@@ -8,7 +8,11 @@ import threading
 import time
 from urllib.parse import quote
 
-import cv2
+try:
+    import cv2
+except ImportError:
+    cv2 = None
+
 import pygame
 
 
@@ -18,6 +22,7 @@ class CameraPanel:
     def __init__(self, width: int, height: int) -> None:
         self.width = width
         self.height = height
+        self.enabled = os.getenv("TAPO_CAMERA_ENABLED", "0") == "1"
         self.host = os.getenv("TAPO_CAMERA_HOST", "").strip()
         self.user = os.getenv("TAPO_CAMERA_USER", "").strip()
         self.password = os.getenv("TAPO_CAMERA_PASSWORD", "")
@@ -26,7 +31,7 @@ class CameraPanel:
         self.lock = threading.Lock()
         self.font = pygame.font.Font(None, 20)
 
-        if self.host and self.user and self.password:
+        if self.enabled and cv2 is not None and self.host and self.user and self.password:
             threading.Thread(target=self._capture_loop, daemon=True).start()
 
     def _url(self) -> str:
@@ -78,6 +83,6 @@ class CameraPanel:
             return
 
         pygame.draw.rect(surface, (0, 8, 3), (x, y, self.width, self.height))
-        message = "CAMERA" if self.host else "SET CAMERA"
+        message = "INSTALL CAMERA" if cv2 is None else ("CAMERA" if self.host else "SET CAMERA")
         image = self.font.render(message, True, (0, 255, 90))
         surface.blit(image, image.get_rect(center=(x + self.width // 2, y + self.height // 2)))
