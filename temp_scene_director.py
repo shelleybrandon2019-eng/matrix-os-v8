@@ -370,7 +370,7 @@ class DualNeoReveal:
 class MatrixDashboard:
     def __init__(self) -> None:
         pygame.init()
-        flags = pygame.FULLSCREEN if FULLSCREEN else 0
+        flags = (pygame.FULLSCREEN | pygame.SCALED) if FULLSCREEN else 0
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT), flags)
         pygame.display.set_caption("Matrix OS - 24H Cyber Clock")
         pygame.mouse.set_visible(False)
