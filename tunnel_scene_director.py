@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pygame
 
+from camera_panel import CameraPanel
 from live_data import BEDROOM_MAC, FRONT_ROOM_MAC
 from temp_scene_director import (
     FORM_SECONDS,
@@ -125,6 +126,7 @@ class TunnelMatrixDashboard(BaseMatrixDashboard):
         super().__init__()
         self.tunnel_overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         self.reveal_rain_layer = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        self.camera = CameraPanel(WIDTH // 4, HEIGHT)
 
         self.label_font = choose_cyber_font(25, bold=True)
         self.room_label_font = choose_cyber_font(22, bold=True)
@@ -291,6 +293,20 @@ class TunnelMatrixDashboard(BaseMatrixDashboard):
             self.rain.draw(self.screen, 0.50)
 
         self.clock.draw(self.screen)
+
+        if self.camera.enabled:
+            matrix_width = WIDTH - self.camera.width
+            matrix_frame = self.screen.copy()
+            self.screen.fill((0, 0, 0))
+            self.screen.blit(
+                pygame.transform.smoothscale(matrix_frame, (matrix_width, HEIGHT)),
+                (0, 0),
+            )
+            self.camera.draw(self.screen, matrix_width, 0)
+            pygame.draw.line(
+                self.screen, GREEN, (matrix_width, 0), (matrix_width, HEIGHT), 2
+            )
+
         pygame.display.flip()
 
 
